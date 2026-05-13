@@ -135,9 +135,7 @@ static BestSolution g_best = { NULL, 0 };
 static double
 mono_seconds(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return (double)clock() / CLOCKS_PER_SEC;
 }
 
 /* Publish `candidate` if shorter than g_best; enforces non-increasing length on stdout. */
@@ -190,7 +188,7 @@ read_all_fragments_array(const char *file_name)
     return fa;
 }
 
-/* Remove any fragment that is a substring of another; order not preserved. */
+/* Remove any fragment that is a substring of another fragment. */
 static void
 remove_substring_fragments_array(FragmentArray *fa)
 {
@@ -281,7 +279,7 @@ static int
 run_held_karp(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: Held-Karp bitmask DP. */
+    /* TODO: Held-Karp. */
     /* End with: try_record_solution(result, result_len, "HELD_KARP", mono_seconds() - t0); */
     (void)fa; (void)t0;
     return 0;
