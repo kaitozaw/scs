@@ -14,14 +14,11 @@
  *
  * Architecture:
  *   A. Common types & utilities
- *   B. SIGINT handling & best-solution registry
+ *   B. Best-solution registry
  *   C. Step 1 — Preprocess
  *   D. Step 2 — correct / sub-optimal / quick algorithms
  *   E. Step 3 — correct / optimal / slow algorithms
  *   F. main()
- *
- * Step 3 is exponential — Ctrl+C interrupts cleanly via g_interrupted;
- * best-so-far stays on stdout.
  * ============================================================================ */
 
 /* ============================================================================
@@ -33,7 +30,6 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
-#include <signal.h>
 #include <time.h>
 #include <stdint.h>
 
@@ -82,7 +78,7 @@ static size_t
 overlap_chars(const char *a, size_t la, const char *b, size_t lb)
 {
     size_t max_k = (la < lb ? la : lb);
-    if (max_k > 0) max_k--;     /* exclude full-prefix / full-suffix matches */
+    if (max_k > 0) max_k--;
     for (size_t k = max_k; k > 0; k--) {
         if (memcmp(a + la - k, b, k) == 0) return k;
     }
@@ -126,10 +122,8 @@ free_overlap_matrix(int **m, size_t n)
 }
 
 /* ============================================================================
- * Section B: SIGINT handling & best-solution registry
+ * Section B: Best-solution registry
  * ============================================================================ */
-
-static volatile sig_atomic_t g_interrupted = 0;
 
 typedef struct {
     char  *str;
@@ -137,23 +131,6 @@ typedef struct {
 } BestSolution;
 
 static BestSolution g_best = { NULL, 0 };
-
-static void
-sigint_handler(int signo)
-{
-    (void)signo;
-    g_interrupted = 1;
-}
-
-static void
-install_sigint_handler(void)
-{
-    struct sigaction sa;
-    sa.sa_handler = sigint_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
-}
 
 static double
 mono_seconds(void)
@@ -283,11 +260,8 @@ run_tgreedy(const FragmentArray *fa)
 static void
 run_step2(const FragmentArray *fa)
 {
-    if (g_interrupted) return;
     run_greedy(fa);
-    if (g_interrupted) return;
     run_mgreedy(fa);
-    if (g_interrupted) return;
     run_tgreedy(fa);
 }
 
@@ -308,7 +282,6 @@ run_held_karp(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
     /* TODO: Held-Karp bitmask DP. */
-    /* Poll g_interrupted at the top of the outer subset-size loop; return early if set. */
     /* End with: try_record_solution(result, result_len, "HELD_KARP", mono_seconds() - t0); */
     (void)fa; (void)t0;
     return 0;
@@ -319,7 +292,6 @@ run_branch_and_bound(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
     /* TODO: Branch & Bound. */
-    /* Poll g_interrupted at the top of each node expansion; return early if set. */
     /* End with: try_record_solution(result, result_len, "BRANCH_AND_BOUND", mono_seconds() - t0); */
     (void)fa; (void)t0;
     return 0;
@@ -328,7 +300,6 @@ run_branch_and_bound(const FragmentArray *fa)
 static void
 run_step3(const FragmentArray *fa)
 {
-    if (g_interrupted) return;
     if (use_held_karp(fa)) run_held_karp(fa);
     else                   run_branch_and_bound(fa);
 }
@@ -349,8 +320,6 @@ main(int argc, char *argv[])
                 argv[0]);
         exit(1);
     }
-
-    install_sigint_handler();
 
     FragmentArray fa = preprocess(argv[1]);
 
