@@ -32,6 +32,9 @@
 #include <assert.h>
 #include <time.h>
 #include <stdint.h>
+#include <limits.h>
+
+/* --- A.1: Fragments & string utilities --- */
 
 typedef struct {
     char  *str;
@@ -98,6 +101,36 @@ merge_with_overlap(const char *a, size_t la,
     return out;
 }
 
+/* --- A.2: Greedy pairwise merging --- */
+
+/* Merge max-overlap pairs in `frags` until one survives; consumed strings are freed. */
+static char *
+greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
+{
+    while (n > 1) {
+        size_t best_i = 0, best_j = 1, best_ov = 0;
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = 0; j < n; j++) {
+                if (i == j) continue;
+                size_t ov = overlap_chars(frags[i].str, frags[i].len, frags[j].str, frags[j].len);
+                if (ov > best_ov) { best_ov = ov; best_i = i; best_j = j; }
+            }
+        }
+        char *merged = merge_with_overlap(frags[best_i].str, frags[best_i].len, frags[best_j].str, frags[best_j].len, best_ov);
+        size_t merged_len = frags[best_i].len + frags[best_j].len - best_ov;
+        free(frags[best_i].str);
+        free(frags[best_j].str);
+        frags[best_i].str = merged;
+        frags[best_i].len = merged_len;
+        if (best_j != n - 1) frags[best_j] = frags[n - 1];
+        n--;
+    }
+    *out_len = frags[0].len;
+    return frags[0].str;
+}
+
+/* --- A.3: Overlap matrix & edge sort --- */
+
 /* n x n matrix; M[i][j] = overlap_chars(items[i], items[j]); diagonal is 0. */
 static int **
 build_overlap_matrix(const FragmentArray *fa)
@@ -119,6 +152,161 @@ free_overlap_matrix(int **m, size_t n)
 {
     for (size_t i = 0; i < n; i++) free(m[i]);
     free(m);
+}
+
+typedef struct {
+    int i;
+    int j;
+    int weight;
+} Edge;
+
+static int
+compare_edge_desc(const void *a, const void *b)
+{
+    const Edge *ea = (const Edge *)a;
+    const Edge *eb = (const Edge *)b;
+    return eb->weight - ea->weight;
+}
+
+/* --- A.4: Cycle-cover graph helpers --- */
+
+/* Pick edges by descending overlap, keeping in/out-degree ≤ 1; cycles allowed. */
+static int **
+mgreedy_select_edges(int **overlap_matrix, size_t n)
+{
+    Edge *edges = malloc(n * n * sizeof(Edge));
+    int edge_count = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < n; j++) {
+            if (i != j && overlap_matrix[i][j] > 0) {
+                edges[edge_count].i = (int)i;
+                edges[edge_count].j = (int)j;
+                edges[edge_count].weight = overlap_matrix[i][j];
+                edge_count++;
+            }
+        }
+    }
+    qsort(edges, edge_count, sizeof(Edge), compare_edge_desc);
+
+    int **selected = malloc(n * sizeof(int *));
+    for (size_t i = 0; i < n; i++) selected[i] = calloc(n, sizeof(int));
+
+    bool *out_used = calloc(n, sizeof(bool));
+    bool *in_used  = calloc(n, sizeof(bool));
+    for (int e = 0; e < edge_count; e++) {
+        int i = edges[e].i, j = edges[e].j;
+        if (out_used[i] || in_used[j]) continue;
+        selected[i][j] = edges[e].weight;
+        out_used[i] = true;
+        in_used[j] = true;
+    }
+
+    free(out_used);
+    free(in_used);
+    free(edges);
+    return selected;
+}
+
+/* Break each cycle by zeroing its weakest edge so every component becomes a path. */
+static void
+mgreedy_break_cycles(int **selected, size_t n)
+{
+    int *in_count = calloc(n, sizeof(int));
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = 0; j < n; j++)
+            if (selected[i][j] > 0) in_count[j]++;
+
+    bool *visited = calloc(n, sizeof(bool));
+
+    /* Mark every node reachable from a path head (in-degree 0). */
+    for (size_t i = 0; i < n; i++) {
+        if (in_count[i] != 0) continue;
+        int cur = (int)i;
+        while (cur != -1 && !visited[cur]) {
+            visited[cur] = true;
+            int next = -1;
+            for (size_t k = 0; k < n; k++) {
+                if (selected[cur][k] > 0) { next = (int)k; break; }
+            }
+            cur = next;
+        }
+    }
+
+    /* Anything still unvisited belongs to a cycle: walk it, drop the weakest edge. */
+    for (size_t i = 0; i < n; i++) {
+        if (visited[i]) continue;
+        int min_from = -1, min_to = -1, min_w = INT_MAX;
+        int cur = (int)i;
+        do {
+            visited[cur] = true;
+            int next = -1;
+            for (size_t k = 0; k < n; k++) {
+                if (selected[cur][k] > 0) { next = (int)k; break; }
+            }
+            if (selected[cur][next] < min_w) {
+                min_w = selected[cur][next];
+                min_from = cur;
+                min_to = next;
+            }
+            cur = next;
+        } while (cur != (int)i);
+        selected[min_from][min_to] = 0;
+    }
+
+    free(visited);
+    free(in_count);
+}
+
+/* For each path head (in-degree 0), traverse forward and overlap-merge into one string. */
+static char **
+mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_t *out_count)
+{
+    char **sequences = malloc(n * sizeof(char *));
+    size_t count = 0;
+
+    for (size_t j = 0; j < n; j++) {
+        bool is_start = true;
+        for (size_t k = 0; k < n; k++) {
+            if (selected[k][j] > 0) { is_start = false; break; }
+        }
+        if (!is_start) continue;
+
+        size_t total_len = fa->items[j].len;
+        {
+            int from = (int)j;
+            while (1) {
+                int next = -1;
+                for (size_t k = 0; k < n; k++) {
+                    if (selected[from][k] > 0) { next = (int)k; break; }
+                }
+                if (next == -1) break;
+                total_len += fa->items[next].len - (size_t)selected[from][next];
+                from = next;
+            }
+        }
+
+        char *seq = malloc(total_len + 1);
+        memcpy(seq, fa->items[j].str, fa->items[j].len);
+        size_t pos = fa->items[j].len;
+
+        int from = (int)j;
+        while (1) {
+            int next = -1;
+            for (size_t k = 0; k < n; k++) {
+                if (selected[from][k] > 0) { next = (int)k; break; }
+            }
+            if (next == -1) break;
+            size_t ov = (size_t)selected[from][next];
+            memcpy(seq + pos, fa->items[next].str + ov, fa->items[next].len - ov);
+            pos += fa->items[next].len - ov;
+            from = next;
+        }
+        seq[pos] = '\0';
+        sequences[count++] = seq;
+    }
+
+    *out_count = count;
+    return sequences;
 }
 
 /* ============================================================================
@@ -143,6 +331,7 @@ static int
 try_record_solution(char *candidate, size_t cand_len, const char *algo_label, double elapsed_sec)
 {
     bool improved = (g_best.str == NULL) || (cand_len < g_best.len);
+    fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs result=%s\n", algo_label, cand_len, elapsed_sec, candidate);
     if (!improved) {
         free(candidate);
         return 0;
@@ -153,7 +342,6 @@ try_record_solution(char *candidate, size_t cand_len, const char *algo_label, do
     fputs(candidate, stdout);
     fputc('\n', stdout);
     fflush(stdout);
-    fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs\n", algo_label, cand_len, elapsed_sec);
     return 1;
 }
 
@@ -229,30 +417,81 @@ static int
 run_greedy(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: GREEDY — repeatedly merge the pair with the maximum overlap. */
-    /* End with: try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0); */
-    (void)fa; (void)t0;
-    return 0;
+    size_t n = fa->count;
+
+    Fragment *frags = malloc(n * sizeof(Fragment));
+    for (size_t i = 0; i < n; i++) {
+        frags[i].len = fa->items[i].len;
+        frags[i].str = malloc(frags[i].len + 1);
+        memcpy(frags[i].str, fa->items[i].str, frags[i].len + 1);
+    }
+
+    size_t result_len;
+    char *result = greedy_merge_pairs(frags, n, &result_len);
+    free(frags);
+
+    return try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0);
 }
 
 static int
 run_mgreedy(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: MGREEDY — modified greedy. */
-    /* End with: try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0); */
-    (void)fa; (void)t0;
-    return 0;
+    size_t n = fa->count;
+
+    int **overlap  = build_overlap_matrix(fa);
+    int **selected = mgreedy_select_edges(overlap, n);
+    mgreedy_break_cycles(selected, n);
+
+    size_t seq_count = 0;
+    char **seqs = mgreedy_build_sequences(fa, selected, n, &seq_count);
+
+    size_t result_len = 0;
+    for (size_t i = 0; i < seq_count; i++) result_len += strlen(seqs[i]);
+
+    char *result = malloc(result_len + 1);
+    size_t pos = 0;
+    for (size_t i = 0; i < seq_count; i++) {
+        size_t len = strlen(seqs[i]);
+        memcpy(result + pos, seqs[i], len);
+        pos += len;
+        free(seqs[i]);
+    }
+    result[result_len] = '\0';
+    free_overlap_matrix(overlap, n);
+    free_overlap_matrix(selected, n);
+    free(seqs);
+
+    return try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0);
 }
 
 static int
 run_tgreedy(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: TGREEDY — tour/path-based greedy. */
-    /* End with: try_record_solution(result, result_len, "TGREEDY", mono_seconds() - t0); */
-    (void)fa; (void)t0;
-    return 0;
+    size_t n = fa->count;
+
+    int **overlap  = build_overlap_matrix(fa);
+    int **selected = mgreedy_select_edges(overlap, n);
+    mgreedy_break_cycles(selected, n);
+
+    size_t seq_count = 0;
+    char **seqs = mgreedy_build_sequences(fa, selected, n, &seq_count);
+    free_overlap_matrix(overlap, n);
+    free_overlap_matrix(selected, n);
+
+    Fragment *frags = malloc(seq_count * sizeof(Fragment));
+    for (size_t i = 0; i < seq_count; i++) {
+        frags[i].str = seqs[i];
+        frags[i].len = strlen(seqs[i]);
+    }
+    free(seqs);
+
+    size_t result_len;
+    char *result = greedy_merge_pairs(frags, seq_count, &result_len);
+    free(frags);
+
+    return try_record_solution(result, result_len, "TGREEDY", mono_seconds() - t0);
 }
 
 static void
