@@ -153,6 +153,64 @@ FUNCTION GREEDY_MERGE(fragments[], n, ov[][], cost[][]):
 
 ---
 
+## Phase 1 Variants
+> *Three greedy strategies are implemented — all produce a valid superstring; quality varies*
+
+### Variant A — GREEDY (Simple Pairwise)
+> *Scan all pairs each round and pick the maximum-overlap merge. O(n³), straightforward.*
+
+```
+FUNCTION SIMPLE_GREEDY_MERGE(fragments[], n):
+    WHILE n > 1:
+        best_ov = 0
+        best_i  = 0
+        best_j  = 1
+
+        FOR i = 0 TO n-1:
+            FOR j = 0 TO n-1:
+                IF i != j:
+                    ov_ij = OVERLAP(fragments[i], fragments[j])
+                    IF ov_ij > best_ov:
+                        best_ov = ov_ij
+                        best_i  = i
+                        best_j  = j
+
+        // Merge: fragments[best_i] is the prefix, fragments[best_j] the suffix
+        fragments[best_i] = fragments[best_i]
+                          + fragments[best_j][best_ov .. end]
+        REMOVE fragments[best_j]
+        n = n - 1
+
+    RETURN fragments[0]
+```
+
+---
+
+### Variant B — MGREEDY (Edge-Cover)
+> *Builds a max-overlap cycle cover then linearises — matches the `GREEDY_MERGE` pseudocode in Phase 1.*
+
+See `GREEDY_MERGE` pseudocode in Phase 1 above.
+
+---
+
+### Variant C — TGREEDY (Two-Phase)
+> *Runs MGREEDY first to collapse fragments into chains, then SIMPLE_GREEDY_MERGE on those chains.*
+
+```
+FUNCTION TGREEDY(fragments[], n, ov[][], cost[][]):
+    // Phase 1: reduce n fragments into fewer merged chains via MGREEDY
+    chains = GREEDY_MERGE(fragments, n, ov, cost)
+
+    // Phase 2: merge the remaining chains with SIMPLE_GREEDY_MERGE
+    RETURN SIMPLE_GREEDY_MERGE(chains, |chains|)
+```
+
+> **Rationale:** MGREEDY is fast but may leave several disjoint chains.
+> The second pass merges them, often producing a shorter result than
+> either strategy applied alone.
+
+---
+
 ## Phase 2 — Exact Search
 > *Held-Karp DP with upper-bound pruning*
 
