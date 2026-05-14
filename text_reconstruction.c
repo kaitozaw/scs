@@ -514,24 +514,261 @@ use_held_karp(const FragmentArray *fa)
     return fa->count <= HK_THRESHOLD;
 }
 
+/*
+ * Held-Karp DP for exact SCS on small inputs (n <= HK_THRESHOLD).
+ *
+ * dp[S*n+v] = minimum total SCS length to cover the fragment subset
+ *             encoded by bitmask S, ending at fragment v.
+ * Base case : dp[{v}*n+v] = flen[v]  (first fragment contributes its full length).
+ * Transition: dp[S2*n+u]  = dp[S*n+v] + flen[u] - ov[v][u],  S2 = S|(1<<u).
+ * Pruning   : discard any partial cost that already meets or exceeds g_best.
+ */
 static int
 run_held_karp(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: Held-Karp. */
-    /* End with: try_record_solution(result, result_len, "HELD_KARP", mono_seconds() - t0); */
-    (void)fa; (void)t0;
-    return 0;
+    size_t n  = fa->count;
+
+    int **ov   = build_overlap_matrix(fa);
+    int  *flen = malloc(n * sizeof(int));
+    for (size_t i = 0; i < n; i++) flen[i] = (int)fa->items[i].len;
+
+    int    full   = (1 << n) - 1;
+    size_t states = (size_t)1 << n;
+
+    int *dp  = malloc(states * n * sizeof(int));
+    int *par = malloc(states * n * sizeof(int));
+    for (size_t i = 0; i < states * n; i++) { dp[i] = INT_MAX / 2; par[i] = -1; }
+
+    for (int v = 0; v < (int)n; v++)
+        dp[(1 << v) * n + v] = flen[v];
+
+    size_t upper_bound = g_best.len;
+
+    for (int S = 1; S <= full; S++) {
+        for (int v = 0; v < (int)n; v++) {
+            if (!(S & (1 << v))) continue;
+            int dpSv = dp[S * n + v];
+            if (dpSv >= INT_MAX / 2) continue;
+            for (int u = 0; u < (int)n; u++) {
+                if (S & (1 << u)) continue;
+                int S2       = S | (1 << u);
+                int new_cost = dpSv + flen[u] - ov[v][u];
+                if ((size_t)new_cost >= upper_bound) continue;
+                if (new_cost < dp[S2 * n + u]) {
+                    dp[S2 * n + u]  = new_cost;
+                    par[S2 * n + u] = v;
+                }
+            }
+        }
+    }
+
+    int best_total = INT_MAX / 2, best_last = -1;
+    for (int v = 0; v < (int)n; v++) {
+        if (dp[full * n + v] < best_total) {
+            best_total = dp[full * n + v];
+            best_last  = v;
+        }
+    }
+
+    if (best_last == -1) {
+        free(dp); free(par); free(flen);
+        free_overlap_matrix(ov, n);
+        return 0;
+    }
+
+    /* Traceback */
+    int *path = malloc(n * sizeof(int));
+    {
+        int S = full, curr = best_last;
+        for (int i = (int)n - 1; i >= 0; i--) {
+            path[i] = curr;
+            int prev = par[S * n + curr];
+            S ^= (1 << curr);
+            curr = prev;
+        }
+    }
+
+    char  *result = malloc((size_t)best_total + 1);
+    size_t pos    = fa->items[path[0]].len;
+    memcpy(result, fa->items[path[0]].str, pos);
+    for (int i = 1; i < (int)n; i++) {
+        int    u    = path[i-1], v2 = path[i];
+        size_t skip = (size_t)ov[u][v2];
+        memcpy(result + pos, fa->items[v2].str + skip, fa->items[v2].len - skip);
+        pos += fa->items[v2].len - skip;
+    }
+    result[pos] = '\0';
+
+    free(path);
+    free(dp); free(par); free(flen);
+    free_overlap_matrix(ov, n);
+
+    return try_record_solution(result, (size_t)best_total, "HELD_KARP", mono_seconds() - t0);
 }
 
+/* --- Branch & Bound: min-heap over partial-path search states --- */
+
+typedef struct {
+    int      lb;       /* lower bound on final SCS length from this state */
+    uint64_t mask;     /* bitmask of visited fragments                    */
+    int      last;     /* index of last visited fragment                  */
+    int      curlen;   /* total SCS length accumulated so far             */
+    int     *path;     /* fragment-index sequence (owned by this state)   */
+    int      path_len;
+} BBState;
+
+typedef struct {
+    BBState *data;
+    int      size;
+    int      cap;
+} MinHeap;
+
+static void
+mh_push(MinHeap *h, BBState s)
+{
+    if (h->size == h->cap) {
+        h->cap  = h->cap ? h->cap * 2 : 64;
+        h->data = realloc(h->data, (size_t)h->cap * sizeof(BBState));
+    }
+    int i = h->size++;
+    h->data[i] = s;
+    while (i > 0) {
+        int p = (i - 1) / 2;
+        if (h->data[p].lb <= h->data[i].lb) break;
+        BBState tmp = h->data[p]; h->data[p] = h->data[i]; h->data[i] = tmp;
+        i = p;
+    }
+}
+
+static BBState
+mh_pop(MinHeap *h)
+{
+    BBState ret = h->data[0];
+    h->data[0]  = h->data[--h->size];
+    for (int i = 0;;) {
+        int l = 2*i+1, r = 2*i+2, m = i;
+        if (l < h->size && h->data[l].lb < h->data[m].lb) m = l;
+        if (r < h->size && h->data[r].lb < h->data[m].lb) m = r;
+        if (m == i) break;
+        BBState tmp = h->data[m]; h->data[m] = h->data[i]; h->data[i] = tmp;
+        i = m;
+    }
+    return ret;
+}
+
+/* Lower bound on extra chars still needed for all unvisited fragments.
+ * For each unvisited u, it must contribute at least (flen[u] - best_ov_into_u). */
+static int
+remaining_lb(uint64_t mask, int n, int **ov, int *flen)
+{
+    int lb = 0;
+    for (int u = 0; u < n; u++) {
+        if (mask & ((uint64_t)1 << u)) continue;
+        int best_ov = 0;
+        for (int v = 0; v < n; v++) {
+            if (v != u && ov[v][u] > best_ov) best_ov = ov[v][u];
+        }
+        lb += flen[u] - best_ov;
+    }
+    return lb;
+}
+
+/*
+ * Branch & Bound: best-first search over all fragment orderings.
+ * Pruned by REMAINING_LB; anytime — emits each improvement immediately.
+ * Limited to n <= 63 (uint64_t bitmask).
+ */
 static int
 run_branch_and_bound(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    /* TODO: Branch & Bound. */
-    /* End with: try_record_solution(result, result_len, "BRANCH_AND_BOUND", mono_seconds() - t0); */
-    (void)fa; (void)t0;
-    return 0;
+    size_t n  = fa->count;
+
+    if (n > 63) return 0;
+
+    int **ov   = build_overlap_matrix(fa);
+    int  *flen = malloc(n * sizeof(int));
+    for (size_t i = 0; i < n; i++) flen[i] = (int)fa->items[i].len;
+
+    size_t   upper_bound = g_best.len;
+    uint64_t full_mask   = ((uint64_t)1 << n) - 1;
+    MinHeap  pq          = { NULL, 0, 0 };
+    int      improved    = 0;
+
+    for (int start = 0; start < (int)n; start++) {
+        uint64_t mask   = (uint64_t)1 << start;
+        int      curlen = flen[start];
+        int      lb     = curlen + remaining_lb(mask, (int)n, ov, flen);
+        if ((size_t)lb >= upper_bound) continue;
+
+        BBState s;
+        s.lb       = lb;
+        s.mask     = mask;
+        s.last     = start;
+        s.curlen   = curlen;
+        s.path_len = 1;
+        s.path     = malloc(sizeof(int));
+        s.path[0]  = start;
+        mh_push(&pq, s);
+    }
+
+    while (pq.size > 0) {
+        BBState cur = mh_pop(&pq);
+
+        if ((size_t)cur.lb >= upper_bound) { free(cur.path); continue; }
+
+        if (cur.mask == full_mask) {
+            size_t rlen = (size_t)cur.curlen;
+            if (rlen < upper_bound) {
+                int   *path   = cur.path;
+                char  *result = malloc(rlen + 1);
+                size_t pos    = fa->items[path[0]].len;
+                memcpy(result, fa->items[path[0]].str, pos);
+                for (int i = 1; i < cur.path_len; i++) {
+                    int    u    = path[i-1], v2 = path[i];
+                    size_t skip = (size_t)ov[u][v2];
+                    memcpy(result + pos, fa->items[v2].str + skip, fa->items[v2].len - skip);
+                    pos += fa->items[v2].len - skip;
+                }
+                result[pos] = '\0';
+                upper_bound  = rlen;
+                improved    |= try_record_solution(result, rlen,
+                                   "BRANCH_AND_BOUND", mono_seconds() - t0);
+            }
+            free(cur.path);
+            continue;
+        }
+
+        for (int next = 0; next < (int)n; next++) {
+            if (cur.mask & ((uint64_t)1 << next)) continue;
+
+            uint64_t new_mask   = cur.mask | ((uint64_t)1 << next);
+            int      new_curlen = cur.curlen + flen[next] - ov[cur.last][next];
+            int      new_lb     = new_curlen + remaining_lb(new_mask, (int)n, ov, flen);
+
+            if ((size_t)new_lb >= upper_bound) continue;
+
+            BBState s;
+            s.lb       = new_lb;
+            s.mask     = new_mask;
+            s.last     = next;
+            s.curlen   = new_curlen;
+            s.path_len = cur.path_len + 1;
+            s.path     = malloc((size_t)s.path_len * sizeof(int));
+            memcpy(s.path, cur.path, (size_t)cur.path_len * sizeof(int));
+            s.path[cur.path_len] = next;
+            mh_push(&pq, s);
+        }
+        free(cur.path);
+    }
+
+    for (int i = 0; i < pq.size; i++) free(pq.data[i].path);
+    free(pq.data);
+    free(flen);
+    free_overlap_matrix(ov, n);
+
+    return improved;
 }
 
 static void

@@ -1,0 +1,6 @@
+# compiled binaries
+text_reconstruction
+text_reconstruction_*
+
+# debug symbol bundles (macOS)
+*.dSYM/
