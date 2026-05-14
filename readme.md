@@ -262,8 +262,78 @@ FUNCTION MERGE_PATH(path[], fragments[], ov[][]):
 
 ## Phase 3 — Branch and Bound
 > *Fallback for large n; still anytime*
+>
+> Best-first search over all fragment orderings, pruned by a lower bound on the
+> remaining SCS length. Outputs each improvement immediately (anytime).
 
 ```
 FUNCTION Branch_and_Bound(fragments[], n, ov[][], cost[][], upper_bound):
-    // TODO
+    // upper_bound = best length found so far (from greedy / Held-Karp)
+
+    best = ""
+
+    // Priority queue ordered by lower bound (min first)
+    // Each state: (lower_bound, mask, last, cur_len, path[])
+    pq = empty min-heap
+
+    // Seed one search state per possible starting fragment
+    FOR start = 0 TO n-1:
+        mask   = (1 << start)
+        curlen = |fragments[start]|
+        lb     = curlen + REMAINING_LB(mask, fragments, n, ov)
+        PUSH (lb, mask, start, curlen, [start]) ONTO pq
+
+    WHILE pq NOT empty:
+        (lb, mask, last, curlen, path) = POP_MIN(pq)
+
+        // Prune: this branch cannot beat the current best
+        IF lb >= upper_bound:   CONTINUE
+
+        // Complete solution — all fragments visited
+        IF mask == (1 << n) - 1:
+            result = MERGE_PATH(path, fragments, ov)
+            IF |result| < upper_bound:
+                upper_bound = |result|
+                best        = result
+                OUTPUT result       // *** ANYTIME OUTPUT ***
+            CONTINUE
+
+        // Branch: extend path with each unvisited fragment
+        FOR next = 0 TO n-1:
+            IF bit next set in mask:    CONTINUE    // already visited
+
+            new_mask   = mask | (1 << next)
+            new_curlen = curlen + cost[last][next]
+            new_lb     = new_curlen + REMAINING_LB(new_mask, fragments, n, ov)
+
+            IF new_lb < upper_bound:
+                PUSH (new_lb, new_mask, next, new_curlen,
+                      path + [next]) ONTO pq
+
+    RETURN best
+```
+
+### Helper: `REMAINING_LB`
+
+```
+FUNCTION REMAINING_LB(mask, fragments[], n, ov[][]):
+    // Lower bound on additional characters still needed for unvisited fragments.
+    // For each unvisited fragment u, it must contribute at least:
+    //   |fragments[u]| - max_ov_into_u
+    // where max_ov_into_u is the best overlap any fragment can feed into u.
+    // Using the global maximum is optimistic (ignores ordering), so it is a
+    // valid (never over-estimating) lower bound.
+
+    lb = 0
+    FOR u = 0 TO n-1:
+        IF bit u set in mask:   CONTINUE    // already placed
+
+        best_ov = 0
+        FOR v = 0 TO n-1:
+            IF v != u:
+                best_ov = max(best_ov, ov[v][u])
+
+        lb = lb + (|fragments[u]| - best_ov)
+
+    RETURN lb
 ```
