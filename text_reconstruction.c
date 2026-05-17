@@ -309,6 +309,72 @@ mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_
     return sequences;
 }
 
+/* --- A.5: Branch & Bound primitives (search state, min-heap, lower bound) --- */
+
+typedef struct {
+    int      lb;       /* lower bound on final SCS length from this state */
+    uint64_t mask;     /* bitmask of visited fragments                    */
+    int      last;     /* index of last visited fragment                  */
+    int      curlen;   /* total SCS length accumulated so far             */
+    int     *path;     /* fragment-index sequence (owned by this state)   */
+    int      path_len;
+} BBState;
+
+typedef struct {
+    BBState *data;
+    int      size;
+    int      cap;
+} MinHeap;
+
+static void
+mh_push(MinHeap *h, BBState s)
+{
+    if (h->size == h->cap) {
+        h->cap  = h->cap ? h->cap * 2 : 64;
+        h->data = realloc(h->data, (size_t)h->cap * sizeof(BBState));
+    }
+    int i = h->size++;
+    h->data[i] = s;
+    while (i > 0) {
+        int p = (i - 1) / 2;
+        if (h->data[p].lb <= h->data[i].lb) break;
+        BBState tmp = h->data[p]; h->data[p] = h->data[i]; h->data[i] = tmp;
+        i = p;
+    }
+}
+
+static BBState
+mh_pop(MinHeap *h)
+{
+    BBState ret = h->data[0];
+    h->data[0]  = h->data[--h->size];
+    for (int i = 0;;) {
+        int l = 2*i+1, r = 2*i+2, m = i;
+        if (l < h->size && h->data[l].lb < h->data[m].lb) m = l;
+        if (r < h->size && h->data[r].lb < h->data[m].lb) m = r;
+        if (m == i) break;
+        BBState tmp = h->data[m]; h->data[m] = h->data[i]; h->data[i] = tmp;
+        i = m;
+    }
+    return ret;
+}
+
+/* Lower bound on extra chars still needed: each unvisited u contributes at least (flen[u] - best_ov_into_u). */
+static int
+remaining_lb(uint64_t mask, int n, int **ov, int *flen)
+{
+    int lb = 0;
+    for (int u = 0; u < n; u++) {
+        if (mask & ((uint64_t)1 << u)) continue;
+        int best_ov = 0;
+        for (int v = 0; v < n; v++) {
+            if (v != u && ov[v][u] > best_ov) best_ov = ov[v][u];
+        }
+        lb += flen[u] - best_ov;
+    }
+    return lb;
+}
+
 /* ============================================================================
  * Section B: Best-solution registry
  * ============================================================================ */
@@ -413,6 +479,11 @@ preprocess(const char *file_name)
  * Section D: Step 2 — correct / sub-optimal / quick algorithms
  * ============================================================================ */
 
+/*
+ * Greedy: repeatedly merge the pair of remaining strings with the maximum
+ * pairwise overlap until a single string survives. Pure pairwise merging,
+ * O(n³) work; simple and fast, conjectured 2-approximation for SCS.
+ */
 static int
 run_greedy(const FragmentArray *fa)
 {
@@ -433,6 +504,11 @@ run_greedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0);
 }
 
+/*
+ * Modified Greedy (MGREEDY): pick edges by descending overlap keeping each
+ * node's in/out-degree ≤ 1, break every resulting cycle at its weakest edge
+ * to obtain disjoint paths, then concatenate the path strings as the SCS.
+ */
 static int
 run_mgreedy(const FragmentArray *fa)
 {
@@ -465,6 +541,11 @@ run_mgreedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0);
 }
 
+/*
+ * Two-phase Greedy (TGREEDY): first run MGREEDY to obtain disjoint path
+ * strings, then merge those strings pairwise by maximum overlap (GREEDY).
+ * Provable 3-approximation for SCS; usually shorter than plain GREEDY.
+ */
 static int
 run_tgreedy(const FragmentArray *fa)
 {
@@ -605,73 +686,6 @@ run_held_karp(const FragmentArray *fa)
     free_overlap_matrix(ov, n);
 
     return try_record_solution(result, (size_t)best_total, "HELD_KARP", mono_seconds() - t0);
-}
-
-/* --- Branch & Bound: min-heap over partial-path search states --- */
-
-typedef struct {
-    int      lb;       /* lower bound on final SCS length from this state */
-    uint64_t mask;     /* bitmask of visited fragments                    */
-    int      last;     /* index of last visited fragment                  */
-    int      curlen;   /* total SCS length accumulated so far             */
-    int     *path;     /* fragment-index sequence (owned by this state)   */
-    int      path_len;
-} BBState;
-
-typedef struct {
-    BBState *data;
-    int      size;
-    int      cap;
-} MinHeap;
-
-static void
-mh_push(MinHeap *h, BBState s)
-{
-    if (h->size == h->cap) {
-        h->cap  = h->cap ? h->cap * 2 : 64;
-        h->data = realloc(h->data, (size_t)h->cap * sizeof(BBState));
-    }
-    int i = h->size++;
-    h->data[i] = s;
-    while (i > 0) {
-        int p = (i - 1) / 2;
-        if (h->data[p].lb <= h->data[i].lb) break;
-        BBState tmp = h->data[p]; h->data[p] = h->data[i]; h->data[i] = tmp;
-        i = p;
-    }
-}
-
-static BBState
-mh_pop(MinHeap *h)
-{
-    BBState ret = h->data[0];
-    h->data[0]  = h->data[--h->size];
-    for (int i = 0;;) {
-        int l = 2*i+1, r = 2*i+2, m = i;
-        if (l < h->size && h->data[l].lb < h->data[m].lb) m = l;
-        if (r < h->size && h->data[r].lb < h->data[m].lb) m = r;
-        if (m == i) break;
-        BBState tmp = h->data[m]; h->data[m] = h->data[i]; h->data[i] = tmp;
-        i = m;
-    }
-    return ret;
-}
-
-/* Lower bound on extra chars still needed for all unvisited fragments.
- * For each unvisited u, it must contribute at least (flen[u] - best_ov_into_u). */
-static int
-remaining_lb(uint64_t mask, int n, int **ov, int *flen)
-{
-    int lb = 0;
-    for (int u = 0; u < n; u++) {
-        if (mask & ((uint64_t)1 << u)) continue;
-        int best_ov = 0;
-        for (int v = 0; v < n; v++) {
-            if (v != u && ov[v][u] > best_ov) best_ov = ov[v][u];
-        }
-        lb += flen[u] - best_ov;
-    }
-    return lb;
 }
 
 /*
