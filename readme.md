@@ -1,4 +1,4 @@
-# SCS Hybrid Solver — IFN664 Assignment 1
+# SCS Hybrid Solver
 
 Anytime solver for Shortest Common Supersequence. Each algorithm publishes its best result immediately, in non-increasing length order.
 
