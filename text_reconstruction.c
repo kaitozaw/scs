@@ -29,7 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <assert.h>
 #include <time.h>
 #include <stdint.h>
 #include <limits.h>
@@ -392,10 +391,15 @@ mono_seconds(void)
     return (double)clock() / CLOCKS_PER_SEC;
 }
 
-/* Publish `candidate` if shorter than g_best; enforces non-increasing length on stdout. */
+/* Publish `candidate` if it beats g_best; NULL only logs to stderr. */
 static int
 try_record_solution(char *candidate, size_t cand_len, const char *algo_label, double elapsed_sec)
 {
+    if (candidate == NULL) {
+        fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs (no improvement over g_best)\n", algo_label, g_best.len, elapsed_sec);
+        return 0;
+    }
+
     bool improved = (g_best.str == NULL) || (cand_len < g_best.len);
     fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs result=%s\n", algo_label, cand_len, elapsed_sec, candidate);
     if (!improved) {
@@ -479,11 +483,7 @@ preprocess(const char *file_name)
  * Section D: Step 2 — correct / sub-optimal / quick algorithms
  * ============================================================================ */
 
-/*
- * Greedy: repeatedly merge the pair of remaining strings with the maximum
- * pairwise overlap until a single string survives. Pure pairwise merging,
- * O(n³) work; simple and fast, conjectured 2-approximation for SCS.
- */
+/* GREEDY: iteratively merge the max-overlap pair until one string remains (Complexity: O(n³)). */
 static int
 run_greedy(const FragmentArray *fa)
 {
@@ -504,11 +504,7 @@ run_greedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0);
 }
 
-/*
- * Modified Greedy (MGREEDY): pick edges by descending overlap keeping each
- * node's in/out-degree ≤ 1, break every resulting cycle at its weakest edge
- * to obtain disjoint paths, then concatenate the path strings as the SCS.
- */
+/* MGREEDY: pick max-overlap edges with in/out-degree ≤ 1, break cycles at weakest edge, concatenate paths (Complexity: O(n² log n)). */
 static int
 run_mgreedy(const FragmentArray *fa)
 {
@@ -541,11 +537,7 @@ run_mgreedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0);
 }
 
-/*
- * Two-phase Greedy (TGREEDY): first run MGREEDY to obtain disjoint path
- * strings, then merge those strings pairwise by maximum overlap (GREEDY).
- * Provable 3-approximation for SCS; usually shorter than plain GREEDY.
- */
+/* TGREEDY: run MGREEDY to form path strings, then GREEDY-merge them pairwise (Complexity: O(n³)). */
 static int
 run_tgreedy(const FragmentArray *fa)
 {
@@ -595,15 +587,7 @@ use_held_karp(const FragmentArray *fa)
     return fa->count <= HK_THRESHOLD;
 }
 
-/*
- * Held-Karp DP for exact SCS on small inputs (n <= HK_THRESHOLD).
- *
- * dp[S*n+v] = minimum total SCS length to cover the fragment subset
- *             encoded by bitmask S, ending at fragment v.
- * Base case : dp[{v}*n+v] = flen[v]  (first fragment contributes its full length).
- * Transition: dp[S2*n+u]  = dp[S*n+v] + flen[u] - ov[v][u],  S2 = S|(1<<u).
- * Pruning   : discard any partial cost that already meets or exceeds g_best.
- */
+/* HELD_KARP: bitmask DP over subsets × end-fragment, exact for n ≤ 20 (Complexity: O(2ⁿ·n²)). */
 static int
 run_held_karp(const FragmentArray *fa)
 {
@@ -655,10 +639,9 @@ run_held_karp(const FragmentArray *fa)
     if (best_last == -1) {
         free(dp); free(par); free(flen);
         free_overlap_matrix(ov, n);
-        return 0;
+        return try_record_solution(NULL, 0, "HELD_KARP", mono_seconds() - t0);
     }
 
-    /* Traceback */
     int *path = malloc(n * sizeof(int));
     {
         int S = full, curr = best_last;
@@ -688,11 +671,7 @@ run_held_karp(const FragmentArray *fa)
     return try_record_solution(result, (size_t)best_total, "HELD_KARP", mono_seconds() - t0);
 }
 
-/*
- * Branch & Bound: best-first search over all fragment orderings.
- * Pruned by REMAINING_LB; anytime — emits each improvement immediately.
- * Limited to n <= 63 (uint64_t bitmask).
- */
+/* BRANCH_AND_BOUND: best-first search over orderings, pruned by REMAINING_LB, exact for n ≤ 63 (Complexity: O(n!) worst-case). */
 static int
 run_branch_and_bound(const FragmentArray *fa)
 {
@@ -782,6 +761,9 @@ run_branch_and_bound(const FragmentArray *fa)
     free(flen);
     free_overlap_matrix(ov, n);
 
+    if (!improved) {
+        try_record_solution(NULL, 0, "BRANCH_AND_BOUND", mono_seconds() - t0);
+    }
     return improved;
 }
 

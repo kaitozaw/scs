@@ -13,9 +13,9 @@ gcc -o text_reconstruction text_reconstruction.c
 
 ## Pipeline ([text_reconstruction.c](text_reconstruction.c))
 
-- **A** Common types & utilities (fragments, overlap, cycle-cover & B&B primitives)
+- **A** Common types & utilities (fragments, greedy merge, overlap, cycle-cover & B&B primitives)
 - **B** Best-solution registry (`try_record_solution` enforces the stdout contract)
 - **C** Step 1 — Preprocess: read fragments, drop substrings of others
-- **D** Step 2 — quick / sub-optimal: GREEDY, MGREEDY, TGREEDY
+- **D** Step 2 — sub-optimal / quick: GREEDY, MGREEDY, TGREEDY
 - **E** Step 3 — optimal / slow: HELD_KARP (n ≤ 20) or BRANCH_AND_BOUND (n ≤ 63)
 - **F** `main()`
