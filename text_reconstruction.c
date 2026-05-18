@@ -636,6 +636,7 @@ run_held_karp(const FragmentArray *fa)
         }
     }
 
+    /* In the final row (S = all fragments), pick the column with the minimum length, walk parents backward to recover the ordering, and emit the string (O(n · L)) */
     int best_total = INT_MAX / 2, best_last = -1;
     for (int v = 0; v < (int)n; v++) {
         if (dp[full * n + v] < best_total) {
@@ -643,13 +644,11 @@ run_held_karp(const FragmentArray *fa)
             best_last  = v;
         }
     }
-
     if (best_last == -1) {
         free(dp); free(par); free(flen);
         free_overlap_matrix(ov, n);
         return try_record_solution(NULL, 0, "HELD_KARP", mono_seconds() - t0);
     }
-
     int *path = malloc(n * sizeof(int));
     {
         int S = full, curr = best_last;
@@ -660,7 +659,6 @@ run_held_karp(const FragmentArray *fa)
             curr = prev;
         }
     }
-
     char  *result = malloc((size_t)best_total + 1);
     size_t pos    = fa->items[path[0]].len;
     memcpy(result, fa->items[path[0]].str, pos);
