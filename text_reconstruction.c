@@ -15,7 +15,7 @@
  * Architecture:
  *   A. Common types & utilities
  *   B. Best-solution registry
- *   C. Step 1 — Preprocess
+ *   C. Step 1 — preprocess
  *   D. Step 2 — correct / sub-optimal / quick algorithms
  *   E. Step 3 — correct / optimal / slow algorithms
  *   F. main()
@@ -423,7 +423,7 @@ try_record_solution(char *candidate, size_t cand_len, const char *algo_label, do
 }
 
 /* ============================================================================
- * Section C: Step 1 — Preprocess
+ * Section C: Step 1 — preprocess
  * ============================================================================ */
 
 static FragmentArray
@@ -479,7 +479,7 @@ remove_substring_fragments_array(FragmentArray *fa)
 }
 
 static FragmentArray
-preprocess(const char *file_name)
+run_step1(const char *file_name)
 {
     FragmentArray fa = read_all_fragments_array(file_name);
     remove_substring_fragments_array(&fa);
@@ -798,7 +798,7 @@ main(int argc, char *argv[])
         exit(1);
     }
 
-    FragmentArray fa = preprocess(argv[1]);
+    FragmentArray fa = run_step1(argv[1]);
 
     if (fa.count == 0) {
         fputc('\n', stdout);

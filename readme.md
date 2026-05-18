@@ -15,7 +15,7 @@ gcc -o text_reconstruction text_reconstruction.c
 
 - **A** Common types & utilities (fragments, greedy merge, overlap, cycle-cover & B&B primitives)
 - **B** Best-solution registry (`try_record_solution` enforces the stdout contract)
-- **C** Step 1 — Preprocess: read fragments, drop substrings of others
+- **C** Step 1 — preprocess: load fragments, remove substring fragments
 - **D** Step 2 — sub-optimal / quick: GREEDY, MGREEDY, TGREEDY
 - **E** Step 3 — optimal / slow: HELD_KARP (n ≤ 20) or BRANCH_AND_BOUND (n ≤ 63)
 - **F** `main()`
