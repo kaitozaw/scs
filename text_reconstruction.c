@@ -75,7 +75,7 @@ fa_free(FragmentArray *fa)
     fa->count = fa->capacity = 0;
 }
 
-/* Max k > 0 such that suffix(a, k) == prefix(b, k); 0 if no overlap. */
+/* Find the longest suffix-prefix overlap between a and b (O(L²)) */
 static size_t
 overlap_chars(const char *a, size_t la, const char *b, size_t lb)
 {
@@ -87,7 +87,7 @@ overlap_chars(const char *a, size_t la, const char *b, size_t lb)
     return 0;
 }
 
-/* Allocate a + b[ov..]. Result length = la + lb - ov. Caller frees. */
+/* Concatenate a and b with the overlap region collapsed (O(L)) */
 static char *
 merge_with_overlap(const char *a, size_t la,
                    const char *b, size_t lb, size_t ov)
@@ -102,11 +102,13 @@ merge_with_overlap(const char *a, size_t la,
 
 /* --- A.2: Greedy pairwise merging --- */
 
-/* Merge max-overlap pairs in `frags` until one survives; consumed strings are freed. */
+/* Repeatedly merge the best-overlap pair until one string remains (O(n³ · L²)) */
 static char *
 greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
 {
+    /* Loop until one string remains (n − 1 iterations) */
     while (n > 1) {
+        /* Find the best-overlap pair (O(n² · L²)) */
         size_t best_i = 0, best_j = 1, best_ov = 0;
         for (size_t i = 0; i < n; i++) {
             for (size_t j = 0; j < n; j++) {
@@ -115,6 +117,7 @@ greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
                 if (ov > best_ov) { best_ov = ov; best_i = i; best_j = j; }
             }
         }
+        /* Merge the chosen pair (O(L)) */
         char *merged = merge_with_overlap(frags[best_i].str, frags[best_i].len, frags[best_j].str, frags[best_j].len, best_ov);
         size_t merged_len = frags[best_i].len + frags[best_j].len - best_ov;
         free(frags[best_i].str);
@@ -130,7 +133,7 @@ greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
 
 /* --- A.3: Overlap matrix & edge sort --- */
 
-/* n x n matrix; M[i][j] = overlap_chars(items[i], items[j]); diagonal is 0. */
+/* Build the overlap matrix (O(n² · L²)) */
 static int **
 build_overlap_matrix(const FragmentArray *fa)
 {
@@ -169,10 +172,11 @@ compare_edge_desc(const void *a, const void *b)
 
 /* --- A.4: Cycle-cover graph helpers --- */
 
-/* Pick edges by descending overlap, keeping in/out-degree ≤ 1; cycles allowed. */
+/* Pick edges greedily under in/out-degree ≤ 1 (O(n² log n)) */
 static int **
 mgreedy_select_edges(int **overlap_matrix, size_t n)
 {
+    /* Collect candidate edges (O(n²)) */
     Edge *edges = malloc(n * n * sizeof(Edge));
     int edge_count = 0;
     for (size_t i = 0; i < n; i++) {
@@ -185,11 +189,13 @@ mgreedy_select_edges(int **overlap_matrix, size_t n)
             }
         }
     }
+    /* Sort by descending weight (O(n² log n)) */
     qsort(edges, edge_count, sizeof(Edge), compare_edge_desc);
 
     int **selected = malloc(n * sizeof(int *));
     for (size_t i = 0; i < n; i++) selected[i] = calloc(n, sizeof(int));
 
+    /* Accept edges keeping in/out-degree ≤ 1 (O(n²)) */
     bool *out_used = calloc(n, sizeof(bool));
     bool *in_used  = calloc(n, sizeof(bool));
     for (int e = 0; e < edge_count; e++) {
@@ -206,10 +212,11 @@ mgreedy_select_edges(int **overlap_matrix, size_t n)
     return selected;
 }
 
-/* Break each cycle by zeroing its weakest edge so every component becomes a path. */
+/* Break cycles at weakest edge (O(n²)) */
 static void
 mgreedy_break_cycles(int **selected, size_t n)
 {
+    /* Compute in-degrees (O(n²)) */
     int *in_count = calloc(n, sizeof(int));
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++)
@@ -217,7 +224,7 @@ mgreedy_break_cycles(int **selected, size_t n)
 
     bool *visited = calloc(n, sizeof(bool));
 
-    /* Mark every node reachable from a path head (in-degree 0). */
+    /* Mark nodes reachable from path heads (O(n²)) */
     for (size_t i = 0; i < n; i++) {
         if (in_count[i] != 0) continue;
         int cur = (int)i;
@@ -231,7 +238,7 @@ mgreedy_break_cycles(int **selected, size_t n)
         }
     }
 
-    /* Anything still unvisited belongs to a cycle: walk it, drop the weakest edge. */
+    /* Walk each unvisited cycle, drop weakest edge (O(n²)) */
     for (size_t i = 0; i < n; i++) {
         if (visited[i]) continue;
         int min_from = -1, min_to = -1, min_w = INT_MAX;
@@ -256,7 +263,7 @@ mgreedy_break_cycles(int **selected, size_t n)
     free(in_count);
 }
 
-/* For each path head (in-degree 0), traverse forward and overlap-merge into one string. */
+/* Concatenate path strings (O(n²)) */
 static char **
 mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_t *out_count)
 {
@@ -358,7 +365,7 @@ mh_pop(MinHeap *h)
     return ret;
 }
 
-/* Lower bound on extra chars still needed: each unvisited u contributes at least (flen[u] - best_ov_into_u). */
+/* Compute a lower bound on the remaining characters needed (O(n²)) */
 static int
 remaining_lb(uint64_t mask, int n, int **ov, int *flen)
 {
@@ -483,7 +490,7 @@ preprocess(const char *file_name)
  * Section D: Step 2 — correct / sub-optimal / quick algorithms
  * ============================================================================ */
 
-/* GREEDY: iteratively merge the max-overlap pair until one string remains (Complexity: O(n³)). */
+/* GREEDY: iteratively merge the max-overlap pair until one string remains (Complexity: worst O(n³ · L²), average O(n³ · L)). */
 static int
 run_greedy(const FragmentArray *fa)
 {
@@ -504,7 +511,7 @@ run_greedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0);
 }
 
-/* MGREEDY: pick max-overlap edges with in/out-degree ≤ 1, break cycles at weakest edge, concatenate paths (Complexity: O(n² log n)). */
+/* MGREEDY: model fragments as nodes of a weighted directed graph (edge weight = overlap), build a max-weight path cover via degree-one greedy edge selection, break cycles at weakest edge, concatenate paths (Complexity: worst O(n² · (L² + log n)), average O(n² · (L + log n))). */
 static int
 run_mgreedy(const FragmentArray *fa)
 {
@@ -537,7 +544,7 @@ run_mgreedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0);
 }
 
-/* TGREEDY: run MGREEDY to form path strings, then GREEDY-merge them pairwise (Complexity: O(n³)). */
+/* TGREEDY: Run MGREEDY first to compress the n fragments into a small set of path strings, then run GREEDY on those paths to produce one supersequence (Complexity: worst O(n² · (L² + log n) + p³ · L′²), average O(n² · (L + log n) + p³ · L′)). */
 static int
 run_tgreedy(const FragmentArray *fa)
 {
@@ -587,7 +594,7 @@ use_held_karp(const FragmentArray *fa)
     return fa->count <= HK_THRESHOLD;
 }
 
-/* HELD_KARP: bitmask DP over subsets × end-fragment, exact for n ≤ 20 (Complexity: O(2ⁿ·n²)). */
+/* HELD_KARP: Build a 2D table indexed by (subset of fragments, last fragment), where each cell holds the shortest supersequence length for ordering that subset ending at that fragment. Fill the table from smaller subsets to larger; the answer is the minimum entry in the final row (subset = all fragments). Restricted to n ≤ 20 (Complexity: worst O(2ⁿ · n²), average O(2ⁿ · n²)). */
 static int
 run_held_karp(const FragmentArray *fa)
 {
@@ -610,6 +617,7 @@ run_held_karp(const FragmentArray *fa)
 
     size_t upper_bound = g_best.len;
 
+    /* For each subset S in increasing order, for each filled cell (S, v) and each fragment u ∉ S, update table[S∪{u}, u] if appending u improves the cell (O(2ⁿ · n²)) */
     for (int S = 1; S <= full; S++) {
         for (int v = 0; v < (int)n; v++) {
             if (!(S & (1 << v))) continue;
@@ -671,7 +679,7 @@ run_held_karp(const FragmentArray *fa)
     return try_record_solution(result, (size_t)best_total, "HELD_KARP", mono_seconds() - t0);
 }
 
-/* BRANCH_AND_BOUND: best-first search over orderings, pruned by REMAINING_LB, exact for n ≤ 63 (Complexity: O(n!) worst-case). */
+/* BRANCH_AND_BOUND: Build every possible ordering of the fragments. Discard any branch whose lower bound cannot beat the current best length. The first ordering that uses every fragment is the optimal answer. Restricted to n ≤ 63 (Complexity: worst O(n! · n³), average O(n! · n³)). */
 static int
 run_branch_and_bound(const FragmentArray *fa)
 {
@@ -689,6 +697,7 @@ run_branch_and_bound(const FragmentArray *fa)
     MinHeap  pq          = { NULL, 0, 0 };
     int      improved    = 0;
 
+    /* For each fragment, push an initial state into the min-heap (state = lower bound, visited fragments, last fragment, current length) (O(n³)) */
     for (int start = 0; start < (int)n; start++) {
         uint64_t mask   = (uint64_t)1 << start;
         int      curlen = flen[start];
@@ -706,6 +715,7 @@ run_branch_and_bound(const FragmentArray *fa)
         mh_push(&pq, s);
     }
 
+    /* Loop until every possible ordering is explored (n! iterations): pop the lowest-bound state; if complete, return it as the answer; else extend by every unvisited fragment, pushing children that beat the current best (O(n³) per iteration) */
     while (pq.size > 0) {
         BBState cur = mh_pop(&pq);
 
@@ -726,8 +736,7 @@ run_branch_and_bound(const FragmentArray *fa)
                 }
                 result[pos] = '\0';
                 upper_bound  = rlen;
-                improved    |= try_record_solution(result, rlen,
-                                   "BRANCH_AND_BOUND", mono_seconds() - t0);
+                improved    |= try_record_solution(result, rlen, "BRANCH_AND_BOUND", mono_seconds() - t0);
             }
             free(cur.path);
             continue;
