@@ -102,13 +102,11 @@ merge_with_overlap(const char *a, size_t la,
 
 /* --- A.2: Greedy pairwise merging --- */
 
-/* Repeatedly merge the best-overlap pair until one string remains (O(n³ · L²)) */
+/* Loop until one string remains (n − 1 iterations): scan all pairs to find the maximum-overlap pair; merge them into a single string (O(n² · L²) per iteration). */
 static char *
 greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
 {
-    /* Loop until one string remains (n − 1 iterations) */
     while (n > 1) {
-        /* Find the best-overlap pair (O(n² · L²)) */
         size_t best_i = 0, best_j = 1, best_ov = 0;
         for (size_t i = 0; i < n; i++) {
             for (size_t j = 0; j < n; j++) {
@@ -117,7 +115,6 @@ greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
                 if (ov > best_ov) { best_ov = ov; best_i = i; best_j = j; }
             }
         }
-        /* Merge the chosen pair (O(L)) */
         char *merged = merge_with_overlap(frags[best_i].str, frags[best_i].len, frags[best_j].str, frags[best_j].len, best_ov);
         size_t merged_len = frags[best_i].len + frags[best_j].len - best_ov;
         free(frags[best_i].str);
@@ -426,6 +423,7 @@ try_record_solution(char *candidate, size_t cand_len, const char *algo_label, do
  * Section C: Step 1 — preprocess
  * ============================================================================ */
 
+/* Load fragments from a file (or stdin if "-") into a FragmentArray */
 static FragmentArray
 read_all_fragments_array(const char *file_name)
 {
@@ -617,7 +615,7 @@ run_held_karp(const FragmentArray *fa)
 
     size_t upper_bound = g_best.len;
 
-    /* For each subset S in increasing order, for each filled cell (S, v) and each fragment u ∉ S, update table[S∪{u}, u] if appending u improves the cell (O(2ⁿ · n²)) */
+    /* For each filled cell (S, v) in increasing-S order, extend by every u ∉ S, updating table[S∪{u}, u] if shorter (O(2ⁿ · n²)) */
     for (int S = 1; S <= full; S++) {
         for (int v = 0; v < (int)n; v++) {
             if (!(S & (1 << v))) continue;
@@ -636,7 +634,7 @@ run_held_karp(const FragmentArray *fa)
         }
     }
 
-    /* In the final row (S = all fragments), pick the column with the minimum length, walk parents backward to recover the ordering, and emit the string (O(n · L)) */
+    /* In the final row (S = all fragments), pick the column with the minimum length (O(n)) */
     int best_total = INT_MAX / 2, best_last = -1;
     for (int v = 0; v < (int)n; v++) {
         if (dp[full * n + v] < best_total) {
@@ -649,6 +647,7 @@ run_held_karp(const FragmentArray *fa)
         free_overlap_matrix(ov, n);
         return try_record_solution(NULL, 0, "HELD_KARP", mono_seconds() - t0);
     }
+    /* Walk parents backward from that column to recover the ordering (O(n)) */
     int *path = malloc(n * sizeof(int));
     {
         int S = full, curr = best_last;
@@ -659,6 +658,7 @@ run_held_karp(const FragmentArray *fa)
             curr = prev;
         }
     }
+    /* Emit the string by concatenating fragments along the ordering with their overlaps (O(n · L)) */
     char  *result = malloc((size_t)best_total + 1);
     size_t pos    = fa->items[path[0]].len;
     memcpy(result, fa->items[path[0]].str, pos);
