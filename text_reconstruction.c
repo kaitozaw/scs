@@ -7,6 +7,7 @@
  *
  * Usage:
  *   ./text_reconstruction <input_file>          (or '-' for stdin)
+ *   ./text_reconstruction --algos LIST <input_file>  (subset of greedy,mgreedy,tgreedy,hk,bb)
  *
  * Output protocol:
  *   stdout : reconstructed text, one solution per line, in non-increasing length order.
@@ -28,10 +29,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdbool.h>
 #include <time.h>
 #include <stdint.h>
 #include <limits.h>
+
+/* --- A.0: Algorithm selection bitmask --- */
+
+#define ALGO_GREEDY   (1u << 0)
+#define ALGO_MGREEDY  (1u << 1)
+#define ALGO_TGREEDY  (1u << 2)
+#define ALGO_HK       (1u << 3)
+#define ALGO_BB       (1u << 4)
+#define ALGO_ALL      0xFFu
+
+static int
+parse_algos(const char *s)
+{
+    int mask = 0;
+    const char *p = s;
+    while (*p) {
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        size_t len = (size_t)(p - start);
+        if      (len == 6 && strncasecmp(start, "greedy",  6) == 0) mask |= ALGO_GREEDY;
+        else if (len == 7 && strncasecmp(start, "mgreedy", 7) == 0) mask |= ALGO_MGREEDY;
+        else if (len == 7 && strncasecmp(start, "tgreedy", 7) == 0) mask |= ALGO_TGREEDY;
+        else if (len == 2 && strncasecmp(start, "hk",      2) == 0) mask |= ALGO_HK;
+        else if (len == 2 && strncasecmp(start, "bb",      2) == 0) mask |= ALGO_BB;
+        else return -1;
+        if (*p == ',') p++;
+    }
+    return mask;
+}
 
 /* --- A.1: Fragments & string utilities --- */
 
@@ -573,11 +604,11 @@ run_tgreedy(const FragmentArray *fa)
 }
 
 static void
-run_step2(const FragmentArray *fa)
+run_step2(const FragmentArray *fa, uint8_t mask)
 {
-    run_greedy(fa);
-    run_mgreedy(fa);
-    run_tgreedy(fa);
+    if (mask & ALGO_GREEDY)  run_greedy(fa);
+    if (mask & ALGO_MGREEDY) run_mgreedy(fa);
+    if (mask & ALGO_TGREEDY) run_tgreedy(fa);
 }
 
 /* ============================================================================
@@ -585,12 +616,6 @@ run_step2(const FragmentArray *fa)
  * ============================================================================ */
 
 #define HK_THRESHOLD 20
-
-static bool
-use_held_karp(const FragmentArray *fa)
-{
-    return fa->count <= HK_THRESHOLD;
-}
 
 /* HELD_KARP: Build a 2D table indexed by (subset of fragments, last fragment), where each cell holds the shortest supersequence length for ordering that subset ending at that fragment. Fill the table from smaller subsets to larger; the answer is the minimum entry in the final row (subset = all fragments). Restricted to n ≤ 20 (Complexity: worst O(2ⁿ · n²), average O(2ⁿ · n²)). */
 static int
@@ -613,7 +638,7 @@ run_held_karp(const FragmentArray *fa)
     for (int v = 0; v < (int)n; v++)
         dp[(1 << v) * n + v] = flen[v];
 
-    size_t upper_bound = g_best.len;
+    size_t upper_bound = (g_best.str == NULL) ? SIZE_MAX : g_best.len;
 
     /* For each filled cell (S, v) in increasing-S order, extend by every u ∉ S, updating table[S∪{u}, u] if shorter (O(2ⁿ · n²)) */
     for (int S = 1; S <= full; S++) {
@@ -690,7 +715,7 @@ run_branch_and_bound(const FragmentArray *fa)
     int  *flen = malloc(n * sizeof(int));
     for (size_t i = 0; i < n; i++) flen[i] = (int)fa->items[i].len;
 
-    size_t   upper_bound = g_best.len;
+    size_t   upper_bound = (g_best.str == NULL) ? SIZE_MAX : g_best.len;
     uint64_t full_mask   = ((uint64_t)1 << n) - 1;
     MinHeap  pq          = { NULL, 0, 0 };
     int      improved    = 0;
@@ -775,10 +800,13 @@ run_branch_and_bound(const FragmentArray *fa)
 }
 
 static void
-run_step3(const FragmentArray *fa)
+run_step3(const FragmentArray *fa, uint8_t mask)
 {
-    if (use_held_karp(fa)) run_held_karp(fa);
-    else                   run_branch_and_bound(fa);
+    bool want_hk = (mask & ALGO_HK) && fa->count <= HK_THRESHOLD;
+    bool want_bb = (mask & ALGO_BB) && fa->count <= 63;
+
+    if      (want_hk) run_held_karp(fa);
+    else if (want_bb) run_branch_and_bound(fa);
 }
 
 /* ============================================================================
@@ -788,9 +816,36 @@ run_step3(const FragmentArray *fa)
 int
 main(int argc, char *argv[])
 {
-    if (argc != 2) {
+    uint8_t     mask       = ALGO_ALL;
+    const char *input_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--algos") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --algos requires an argument\n");
+                exit(1);
+            }
+            int parsed = parse_algos(argv[++i]);
+            if (parsed < 0) {
+                fprintf(stderr,
+                        "Error: invalid --algos value '%s'. "
+                        "Valid tokens: greedy,mgreedy,tgreedy,hk,bb\n",
+                        argv[i]);
+                exit(1);
+            }
+            mask = (uint8_t)parsed;
+        } else if (input_path == NULL) {
+            input_path = argv[i];
+        } else {
+            fprintf(stderr, "Error: unexpected argument '%s'\n", argv[i]);
+            exit(1);
+        }
+    }
+
+    if (input_path == NULL) {
         fprintf(stderr,
-                "Usage: %s [ <input_file> | - ]\n"
+                "Usage: %s [--algos LIST] [ <input_file> | - ]\n"
+                "  --algos LIST: subset of {greedy,mgreedy,tgreedy,hk,bb} (default: all).\n"
                 "  Input: one fragment per line (no blank lines).\n"
                 "  stdout: reconstructed text (non-increasing length).\n"
                 "  stderr: per-algorithm metrics.\n",
@@ -798,7 +853,7 @@ main(int argc, char *argv[])
         exit(1);
     }
 
-    FragmentArray fa = run_step1(argv[1]);
+    FragmentArray fa = run_step1(input_path);
 
     if (fa.count == 0) {
         fputc('\n', stdout);
@@ -812,8 +867,8 @@ main(int argc, char *argv[])
         memcpy(copy, fa.items[0].str, fa.items[0].len + 1);
         try_record_solution(copy, fa.items[0].len, "trivial", 0.0);
     } else {
-        run_step2(&fa);
-        run_step3(&fa);
+        run_step2(&fa, mask);
+        run_step3(&fa, mask);
     }
 
     fa_free(&fa);

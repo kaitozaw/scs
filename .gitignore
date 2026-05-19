@@ -4,3 +4,9 @@ text_reconstruction_*
 
 # debug symbol bundles (macOS)
 *.dSYM/
+
+# benchmark output
+results/
+
+# python bytecode cache
+__pycache__/
