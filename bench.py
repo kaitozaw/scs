@@ -29,15 +29,12 @@ Usage:
 
   # Subset of charsets (override defaults)
   python3 bench.py --charsets binary
-  python3 bench.py --charsets binary,dna
 
   # Subset of n values (any comma list works)
   python3 bench.py --ns 5,10,15
-  python3 bench.py --ns 20,40,60
 
   # Tune per-run timeout (seconds). Increase for larger n on slow charsets.
   python3 bench.py --timeout 60
-  python3 bench.py --exp 2 --charsets binary --timeout 300
 
   # Force gcc rebuild before benchmarking (after C source edits)
   python3 bench.py --rebuild
