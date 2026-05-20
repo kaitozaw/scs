@@ -411,7 +411,7 @@ remaining_lb(uint64_t mask, int n, int **ov, int *flen)
 }
 
 /* ============================================================================
- * Section B: Best-solution registry + testing metrics
+ * Section B: Best-solution registry & testing metrics
  * ============================================================================ */
 
 typedef struct {
