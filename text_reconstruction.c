@@ -11,11 +11,12 @@
  *
  * Output protocol:
  *   stdout : reconstructed text, one solution per line, in non-increasing length order.
- *   stderr : per-algorithm metrics:  [algo=NAME] len=N elapsed=T.TTTs
+ *   stderr : per-algorithm metrics : [algo=NAME] len=N elapsed=T.TTTs result=...
+ *            quality/test metrics  : [test=NAME] correct=yes|no len=N lb=N gap=N improvement=P% est_ratio=R
  *
  * Architecture:
  *   A. Common types & utilities
- *   B. Best-solution registry
+ *   B. Best-solution registry & testing metrics
  *   C. Step 1 — preprocess
  *   D. Step 2 — correct / sub-optimal / quick algorithms
  *   E. Step 3 — correct / optimal / slow algorithms
@@ -618,7 +619,7 @@ test_log_quality_metrics(const char *algo_label,
 }
 
 /* ---------------------------------------------------------------------------
- * B.2 Best-solution registry
+ * B.2 Best-solution registry & testing metrics
  * --------------------------------------------------------------------------- */
 
 /*
@@ -1076,7 +1077,7 @@ main(int argc, char *argv[])
                 "  --algos LIST: subset of {greedy,mgreedy,tgreedy,hk,bb} (default: all).\n"
                 "  Input: one fragment per line (no blank lines).\n"
                 "  stdout: reconstructed text (non-increasing length).\n"
-                "  stderr: per-algorithm metrics.\n",
+                "  stderr: per-algorithm and quality/test metrics.\n",
                 argv[0]);
         exit(1);
     }

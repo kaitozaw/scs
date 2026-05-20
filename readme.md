@@ -9,12 +9,12 @@ gcc -o text_reconstruction text_reconstruction.c
 
 - **stdin/input** — one fragment per line.
 - **stdout** — reconstructed text, one solution per line.
-- **stderr** — `[algo=NAME] len=N elapsed=T.TTTs result=...`.
+- **stderr** — `[algo=NAME] len=N elapsed=T.TTTs result=...` and `[test=NAME] correct=... lb=N gap=N improvement=...% est_ratio=R ...` quality metrics.
 
 ## Pipeline ([text_reconstruction.c](text_reconstruction.c))
 
 - **A** Common types & utilities (fragments, greedy merge, overlap, cycle-cover & B&B primitives)
-- **B** Best-solution registry (`try_record_solution` enforces the stdout contract)
+- **B** Best-solution registry & testing metrics (`try_record_solution` enforces the stdout contract; quality metrics logged to stderr)
 - **C** Step 1 — preprocess: load fragments, remove substring fragments
 - **D** Step 2 — sub-optimal / quick: GREEDY, MGREEDY, TGREEDY
 - **E** Step 3 — optimal / slow: HELD_KARP (n ≤ 20) or BRANCH_AND_BOUND (n ≤ 63)
