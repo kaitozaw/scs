@@ -12,11 +12,10 @@
  * Output protocol:
  *   stdout : reconstructed text, one solution per line, in non-increasing length order.
  *   stderr : per-algorithm metrics : [algo=NAME] len=N elapsed=T.TTTs result=...
- *            quality/test metrics  : [test=NAME] correct=yes|no len=N lb=N gap=N improvement=P% est_ratio=R
  *
  * Architecture:
  *   A. Common types & utilities
- *   B. Best-solution registry & testing metrics
+ *   B. Best-solution registry
  *   C. Step 1 — preprocess
  *   D. Step 2 — correct / sub-optimal / quick algorithms
  *   E. Step 3 — correct / optimal / slow algorithms
@@ -130,6 +129,13 @@ merge_with_overlap(const char *a, size_t la,
     memcpy(out + la, b + ov, lb - ov);
     out[out_len] = '\0';
     return out;
+}
+
+/* Elapsed CPU time in seconds, for per-algorithm timing */
+static double
+mono_seconds(void)
+{
+    return (double)clock() / CLOCKS_PER_SEC;
 }
 
 /* --- A.2: Greedy pairwise merging --- */
@@ -411,7 +417,7 @@ remaining_lb(uint64_t mask, int n, int **ov, int *flen)
 }
 
 /* ============================================================================
- * Section B: Best-solution registry & testing metrics
+ * Section B: Best-solution registry
  * ============================================================================ */
 
 typedef struct {
@@ -421,217 +427,7 @@ typedef struct {
 
 static BestSolution g_best = { NULL, 0 };
 
-/*
- * Section B now also supports testing/quality measurement.
- *
- * All algorithms publish their candidate result through try_record_solution().
- * Therefore, by adding testing metrics here, every algorithm result can be
- * measured consistently without changing each individual algorithm.
- *
- * This pointer is assigned in main() after preprocessing.
- */
-static const FragmentArray *g_test_input = NULL;
-
-static double
-mono_seconds(void)
-{
-    return (double)clock() / CLOCKS_PER_SEC;
-}
-
-/* ---------------------------------------------------------------------------
- * B.1 Testing helper functions
- * --------------------------------------------------------------------------- */
-
-/*
- * Direct concatenation length.
- *
- * This is the baseline length if all fragments are simply joined together
- * without using any overlap.
- */
-static size_t
-test_direct_concat_len(const FragmentArray *fa)
-{
-    size_t total = 0;
-
-    for (size_t i = 0; i < fa->count; i++) {
-        total += fa->items[i].len;
-    }
-
-    return total;
-}
-
-/*
- * Lower bound 1:
- * The final reconstruction must be at least as long as the longest fragment.
- */
-static size_t
-test_longest_fragment_lb(const FragmentArray *fa)
-{
-    size_t longest = 0;
-
-    for (size_t i = 0; i < fa->count; i++) {
-        if (fa->items[i].len > longest) {
-            longest = fa->items[i].len;
-        }
-    }
-
-    return longest;
-}
-
-/*
- * Lower bound 2:
- * Overlap-based lower bound.
- *
- * For each fragment j, find the best incoming overlap from any other
- * fragment i. This estimates the maximum possible overlap saving.
- *
- * lower bound = total fragment length - estimated maximum overlap saving
- *
- * This is not the true optimal length. It is only a theoretical lower estimate.
- */
-static size_t
-test_overlap_based_lb(const FragmentArray *fa)
-{
-    size_t n = fa->count;
-    size_t total_len = test_direct_concat_len(fa);
-    size_t max_possible_saving = 0;
-
-    for (size_t j = 0; j < n; j++) {
-        size_t best_incoming = 0;
-
-        for (size_t i = 0; i < n; i++) {
-            if (i == j) continue;
-
-            size_t ov = overlap_chars(
-                fa->items[i].str,
-                fa->items[i].len,
-                fa->items[j].str,
-                fa->items[j].len
-            );
-
-            if (ov > best_incoming) {
-                best_incoming = ov;
-            }
-        }
-
-        max_possible_saving += best_incoming;
-    }
-
-    /*
-     * Safety check:
-     * The lower bound should not become zero or negative.
-     */
-    if (max_possible_saving >= total_len) {
-        return 1;
-    }
-
-    return total_len - max_possible_saving;
-}
-
-/*
- * Final lower bound used for quality estimation.
- *
- * We take the stronger value between:
- * 1. longest fragment lower bound
- * 2. overlap-based lower bound
- */
-static size_t
-test_final_lower_bound(const FragmentArray *fa)
-{
-    size_t lb1 = test_longest_fragment_lb(fa);
-    size_t lb2 = test_overlap_based_lb(fa);
-
-    return lb1 > lb2 ? lb1 : lb2;
-}
-
-/*
- * Correctness check.
- *
- * A reconstructed string is correct only if every input fragment appears
- * somewhere inside it.
- */
-static bool
-test_is_correct_reconstruction(const FragmentArray *fa, const char *candidate)
-{
-    if (candidate == NULL) {
-        return false;
-    }
-
-    for (size_t i = 0; i < fa->count; i++) {
-        if (strstr(candidate, fa->items[i].str) == NULL) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-/*
- * Print testing metrics for one algorithm result.
- *
- * Important:
- * This function prints to stderr, not stdout.
- *
- * stdout is reserved for reconstructed strings, so testing output should
- * not interfere with the required output protocol.
- */
-static void
-test_log_quality_metrics(const char *algo_label,
-                         const char *candidate,
-                         size_t cand_len,
-                         double elapsed_sec)
-{
-    if (g_test_input == NULL || candidate == NULL) {
-        return;
-    }
-
-    const FragmentArray *fa = g_test_input;
-
-    size_t direct_len = test_direct_concat_len(fa);
-    size_t lower_bound = test_final_lower_bound(fa);
-    bool correct = test_is_correct_reconstruction(fa, candidate);
-
-    long long reduction = (long long)direct_len - (long long)cand_len;
-    long long gap = (long long)cand_len - (long long)lower_bound;
-
-    double improvement = 0.0;
-    if (direct_len > 0) {
-        improvement = ((double)reduction / (double)direct_len) * 100.0;
-    }
-
-    double estimated_ratio = 0.0;
-    if (lower_bound > 0) {
-        estimated_ratio = (double)cand_len / (double)lower_bound;
-    }
-
-    fprintf(stderr,
-            "[test=%s] correct=%s direct=%zu len=%zu reduction=%lld improvement=%.2f%% lb=%zu gap=%lld est_ratio=%.4f elapsed=%.3fs\n",
-            algo_label,
-            correct ? "yes" : "no",
-            direct_len,
-            cand_len,
-            reduction,
-            improvement,
-            lower_bound,
-            gap,
-            estimated_ratio,
-            elapsed_sec);
-}
-
-/* ---------------------------------------------------------------------------
- * B.2 Best-solution registry & testing metrics
- * --------------------------------------------------------------------------- */
-
-/*
- * Publish candidate if it beats g_best.
- *
- * Behaviour:
- * - If candidate is NULL, only log that there was no improvement.
- * - If candidate exists, log normal algorithm metrics.
- * - Also log testing metrics.
- * - If candidate is shorter than g_best, update g_best and print to stdout.
- * - If candidate is not better, free it.
- */
+/* Log algo metrics; if candidate beats g_best, publish it to stdout, else free it (NULL = no improvement) */
 static int
 try_record_solution(char *candidate,
                     size_t cand_len,
@@ -647,20 +443,12 @@ try_record_solution(char *candidate,
         return 0;
     }
 
-    /*
-     * Original per-algorithm logging.
-     */
     fprintf(stderr,
             "[algo=%s] len=%zu elapsed=%.3fs result=%s\n",
             algo_label,
             cand_len,
             elapsed_sec,
             candidate);
-
-    /*
-     * Extra testing metrics added for algorithm evaluation.
-     */
-    test_log_quality_metrics(algo_label, candidate, cand_len, elapsed_sec);
 
     bool improved = (g_best.str == NULL) || (cand_len < g_best.len);
 
@@ -1083,11 +871,6 @@ main(int argc, char *argv[])
     }
 
     FragmentArray fa = run_step1(input_path);
-
-    /*
-     * Give Section B testing functions access to the preprocessed input.
-     */
-    g_test_input = &fa;
 
     if (fa.count == 0) {
         fputc('\n', stdout);
