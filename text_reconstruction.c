@@ -64,7 +64,15 @@ parse_algos(const char *s)
     return mask;
 }
 
-/* --- A.1: Fragments & string utilities --- */
+/* --- A.1: Timing --- */
+
+static double
+mono_seconds(void)
+{
+    return (double)clock() / CLOCKS_PER_SEC;
+}
+
+/* --- A.2: Fragments & string utilities --- */
 
 typedef struct {
     char  *str;
@@ -131,14 +139,7 @@ merge_with_overlap(const char *a, size_t la,
     return out;
 }
 
-/* Elapsed CPU time in seconds, for per-algorithm timing */
-static double
-mono_seconds(void)
-{
-    return (double)clock() / CLOCKS_PER_SEC;
-}
-
-/* --- A.2: Greedy pairwise merging --- */
+/* --- A.3: Greedy pairwise merging --- */
 
 /* Loop until one string remains (n − 1 iterations): scan all pairs to find the maximum-overlap pair; merge them into a single string (O(n² · L²) per iteration). */
 static char *
@@ -166,7 +167,7 @@ greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
     return frags[0].str;
 }
 
-/* --- A.3: Overlap matrix & edge sort --- */
+/* --- A.4: Overlap matrix & edge sort --- */
 
 /* Build the overlap matrix (O(n² · L²)) */
 static int **
@@ -205,7 +206,7 @@ compare_edge_desc(const void *a, const void *b)
     return eb->weight - ea->weight;
 }
 
-/* --- A.4: Cycle-cover graph helpers --- */
+/* --- A.5: Cycle-cover graph helpers --- */
 
 /* Pick edges greedily under in/out-degree ≤ 1 (O(n² log n)) */
 static int **
@@ -350,7 +351,7 @@ mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_
     return sequences;
 }
 
-/* --- A.5: Branch & Bound primitives (search state, min-heap, lower bound) --- */
+/* --- A.6: Branch & Bound primitives (search state, min-heap, lower bound) --- */
 
 typedef struct {
     int      lb;       /* lower bound on final SCS length from this state */

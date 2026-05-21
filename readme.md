@@ -13,22 +13,9 @@ gcc -o text_reconstruction text_reconstruction.c
 
 ## Pipeline ([text_reconstruction.c](text_reconstruction.c))
 
-- **A** Common types & utilities (fragments, greedy merge, overlap, cycle-cover & B&B primitives)
+- **A** Common types & utilities (algo selection, timing, fragments, greedy merge, overlap, cycle-cover & B&B primitives)
 - **B** Best-solution registry (`try_record_solution` enforces the stdout contract)
 - **C** Step 1 — preprocess: load fragments, remove substring fragments
 - **D** Step 2 — sub-optimal / quick: GREEDY, MGREEDY, TGREEDY
 - **E** Step 3 — optimal / slow: HELD_KARP (n ≤ 20) or BRANCH_AND_BOUND (n ≤ 63)
 - **F** `main()`
-
-## Quality metrics ([quality.py](quality.py))
-
-`quality.py` runs the solver and reports, per algorithm, how good each
-reconstruction is — correctness and length versus a theoretical lower bound.
-This was previously emitted by the C solver itself; it now lives in Python.
-
-```sh
-python3 quality.py <input_file>      # or '-' for stdin
-python3 quality.py --algos greedy,hk <input_file>
-```
-
-Adds `[test=NAME] correct=... direct=N len=N reduction=N improvement=...% lb=N gap=N est_ratio=R` lines to stderr.
