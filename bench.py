@@ -83,9 +83,17 @@ HK_THRESHOLD = 20
 BB_LIMIT = 63
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BIN_PATH = SCRIPT_DIR / "text_reconstruction"
-SRC_PATH = SCRIPT_DIR / "text_reconstruction.c"
 RESULTS_DIR = SCRIPT_DIR / "results"
+
+IMPLS: dict[str, str] = {
+    "baseline": "text_reconstruction",
+    "kmp":      "kmp_text_reconstruction",
+}
+
+# Selected implementation; reassigned in main() based on --impl.
+IMPL_NAME: str = "baseline"
+BIN_PATH: Path = SCRIPT_DIR / IMPLS[IMPL_NAME]
+SRC_PATH: Path = SCRIPT_DIR / f"{IMPLS[IMPL_NAME]}.c"
 
 
 # ============================================================================
@@ -363,9 +371,14 @@ def fmt_ratio(v: float | None) -> str:
     return f"{v:.3f}"
 
 
+def _exp_csv_path(stem: str) -> Path:
+    suffix = "" if IMPL_NAME == "baseline" else f"_{IMPL_NAME}"
+    return RESULTS_DIR / f"{stem}{suffix}.csv"
+
+
 def experiment_1(charsets: list[str], ns: list[int], timeout: float) -> None:
-    print("\n=== Experiment 1: Step 2 optimality & time ===")
-    csv_path = RESULTS_DIR / "exp1.csv"
+    print(f"\n=== Experiment 1: Step 2 optimality & time [impl={IMPL_NAME}] ===")
+    csv_path = _exp_csv_path("exp1")
     writer = CsvWriter(csv_path, [
         "charset", "n", "cycle_cover", "overlap", "algo", "len", "elapsed_s",
         "opt_len", "opt_source", "optimality_ratio", "wall_s", "dnf",
@@ -453,9 +466,8 @@ def _run_step3_algo(frags: list[str], algo_token: str, expected_algo: str,
 
 def _experiment_step3(name: str, charsets: list[str], ns: list[int],
                       timeout: float, warm_start: bool) -> None:
-    print(f"\n=== {name} ===")
-    fname = "exp3.csv" if warm_start else "exp2.csv"
-    csv_path = RESULTS_DIR / fname
+    print(f"\n=== {name} [impl={IMPL_NAME}] ===")
+    csv_path = _exp_csv_path("exp3" if warm_start else "exp2")
 
     fields = ["charset", "n", "algo", "len", "elapsed_s", "wall_s", "dnf"]
     if warm_start:
@@ -580,7 +592,14 @@ def main() -> None:
                    help=f"Per-run timeout seconds (default: {PER_RUN_TIMEOUT_S})")
     p.add_argument("--rebuild", action="store_true",
                    help="Re-run gcc before benchmarking")
+    p.add_argument("--impl", default="baseline", choices=sorted(IMPLS.keys()),
+                   help="Which C implementation to benchmark (default: baseline)")
     args = p.parse_args()
+
+    global IMPL_NAME, BIN_PATH, SRC_PATH
+    IMPL_NAME = args.impl
+    BIN_PATH = SCRIPT_DIR / IMPLS[IMPL_NAME]
+    SRC_PATH = SCRIPT_DIR / f"{IMPLS[IMPL_NAME]}.c"
 
     ensure_built(args.rebuild)
 
