@@ -504,6 +504,7 @@ read_all_fragments_array(const char *file_name)
 }
 
 // Remove any fragment that is a substring of another fragment.
+// Complexity: worst O(n^2 * L^2), average O(n^2 * L)
 static void
 remove_substring_fragments_array(FragmentArray *fa)
 {
