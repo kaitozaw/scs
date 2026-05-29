@@ -1,16 +1,13 @@
 /* ============================================================================
  * IFN664 Advanced Algorithms & Computational Complexity
- * Assignment 1 - Shortest Common Supersequence
+ * Assignment 1 — Shortest Common Supersequence
  *
- * Compile:  
- * gcc -o text_reconstruction text_reconstruction.c
+ * Compile:
+ *   gcc -o text_reconstruction text_reconstruction.c
  *
  * Usage:
- *   runs all of the algo:- ./text_reconstruction <input_file> (or '-' for stdin)
- *   but for different amounts of fragment size in run_step3 there is a algo selection criteria for algo_hk and algo_bb
- * 
- *   use this if you only want to run a subset of the algo, such as ./kmp_text_reconstruction --algos greedy,hk <input_file> :-
- *  ./kmp_text_reconstruction --algos LIST <input_file>  (subsets available:- greedy,mgreedy,tgreedy,hk,bb)
+ *   ./text_reconstruction <input_file>          (or '-' for stdin)
+ *   ./text_reconstruction --algos LIST <input_file>  (subset of greedy,mgreedy,tgreedy,hk,bb)
  *
  * Output protocol:
  *   stdout : reconstructed text, one solution per line, in non-increasing length order.
@@ -18,22 +15,16 @@
  *
  * Architecture:
  *   A. Common types & utilities
- *      A.0: Algorithm selection bitmask
- *      A.1: Timing
- *      A.2: Fragments & string utilities
- *      A.3: Greedy pairwise merging
- *      A.4: Overlap matrix & edge sort
- *      A.5: Cycle-cover graph helpers
- *      A.6: Branch & Bound primitives (search state, min-heap, lower bound)
  *   B. Best-solution registry
- *   C. Step 1 - preprocess
- *   D. Step 2 - correct / sub-optimal / quick algorithms
- *   E. Step 3 - correct / optimal / slow algorithms
+ *   C. Step 1 — preprocess
+ *   D. Step 2 — correct / sub-optimal / quick algorithms
+ *   E. Step 3 — correct / optimal / slow algorithms
  *   F. main()
  * ============================================================================ */
 
-
-// Section A: Common types & utilities
+/* ============================================================================
+ * Section A: Common types & utilities
+ * ============================================================================ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,38 +35,36 @@
 #include <stdint.h>
 #include <limits.h>
 
-// A.0: Algorithm selection bitmask
+/* --- A.0: Algorithm selection bitmask --- */
 
-#define ALGO_GREEDY (1u << 0) // 00000001;  1u = 1 unsigned integer, 
-#define ALGO_MGREEDY (1u << 1) // 00000010   as signed integer reserve their leftmost bit to represent negative numbers and could potentially cause undefined behaviour
-#define ALGO_TGREEDY (1u << 2) // 00000100
-#define ALGO_HK (1u << 3) // 00001000
-#define ALGO_BB (1u << 4) // 00010000
-#define ALGO_ALL 0xFFu // 11111111 (F hexadecimal = 1111)
+#define ALGO_GREEDY   (1u << 0)
+#define ALGO_MGREEDY  (1u << 1)
+#define ALGO_TGREEDY  (1u << 2)
+#define ALGO_HK       (1u << 3)
+#define ALGO_BB       (1u << 4)
+#define ALGO_ALL      0xFFu
 
 static int
 parse_algos(const char *s)
 {
-    int mask = 0; // 00000000 = all switches off
-    const char *p = s; // pointer runs through string
+    int mask = 0;
+    const char *p = s;
     while (*p) {
-        const char *start = p; // advance until comma or end
-        while (*p && *p != ',') p++; // measure the token length, just pointer arthmetic
+        const char *start = p;
+        while (*p && *p != ',') p++;
         size_t len = (size_t)(p - start);
-        // match token and flip "switch"; strncasecmp compares case-insensitivity
-        if (len == 6 && strncasecmp(start, "greedy",  6) == 0) mask |= ALGO_GREEDY;
+        if      (len == 6 && strncasecmp(start, "greedy",  6) == 0) mask |= ALGO_GREEDY;
         else if (len == 7 && strncasecmp(start, "mgreedy", 7) == 0) mask |= ALGO_MGREEDY;
         else if (len == 7 && strncasecmp(start, "tgreedy", 7) == 0) mask |= ALGO_TGREEDY;
-        else if (len == 2 && strncasecmp(start, "hk", 2) == 0) mask |= ALGO_HK;
-        else if (len == 2 && strncasecmp(start, "bb", 2) == 0) mask |= ALGO_BB;
+        else if (len == 2 && strncasecmp(start, "hk",      2) == 0) mask |= ALGO_HK;
+        else if (len == 2 && strncasecmp(start, "bb",      2) == 0) mask |= ALGO_BB;
         else return -1;
-        if (*p == ',') p++; // such as ./kmp_text_reconstruction --algos greedy,hk <- skip the comma after greedy and continue
+        if (*p == ',') p++;
     }
     return mask;
 }
 
-// A.1: Timing
-// to measure how many CPU ticks -> convert to seconds have elapsed since the program started
+/* --- A.1: Timing --- */
 
 static double
 mono_seconds(void)
@@ -83,19 +72,17 @@ mono_seconds(void)
     return (double)clock() / CLOCKS_PER_SEC;
 }
 
-// A.2: Fragments & string utilities
+/* --- A.2: Fragments & string utilities --- */
 
-// store length alongside the string, can use fragment.len = O(1) without calling strlen = O(n) -as it needs to scan the string char by char every single time
 typedef struct {
-    char *str;
+    char  *str;
     size_t len;
 } Fragment;
 
-// dynamic array as we don't know the input text size
 typedef struct {
     Fragment *items;
-    size_t count;
-    size_t capacity;
+    size_t    count;
+    size_t    capacity;
 } FragmentArray;
 
 static FragmentArray
@@ -109,9 +96,6 @@ static void
 fa_push(FragmentArray *fa, char *str)
 {
     if (fa->count == fa->capacity) {
-        // first grab 8 slots or full then x2 size
-        // if only increase by 1 each time, then e.g. adding 100 fragments would trigger 100 memory reallocations = slow and expensive
-        // by x2 trigger at most log(n) reallocations, for 100 fragments it's only ~7 resizes instead
         size_t new_cap = fa->capacity == 0 ? 8 : fa->capacity * 2;
         fa->items = realloc(fa->items, new_cap * sizeof(Fragment));
         fa->capacity = new_cap;
@@ -122,7 +106,7 @@ fa_push(FragmentArray *fa, char *str)
 }
 
 static void
-fa_free(FragmentArray *fa) // run this function to prevent memory leak - walk every fragment and free its string, then free the array
+fa_free(FragmentArray *fa)
 {
     for (size_t i = 0; i < fa->count; i++) free(fa->items[i].str);
     free(fa->items);
@@ -130,7 +114,7 @@ fa_free(FragmentArray *fa) // run this function to prevent memory leak - walk ev
     fa->count = fa->capacity = 0;
 }
 
-// Find the longest suffix-prefix overlap between a and b (O(L^2))
+/* Find the longest suffix-prefix overlap between a and b (O(L²)) */
 static size_t
 overlap_chars(const char *a, size_t la, const char *b, size_t lb)
 {
@@ -142,9 +126,10 @@ overlap_chars(const char *a, size_t la, const char *b, size_t lb)
     return 0;
 }
 
-// Concatenate a and b with the overlap region collapsed (O(L))
+/* Concatenate a and b with the overlap region collapsed (O(L)) */
 static char *
-merge_with_overlap(const char *a, size_t la, const char *b, size_t lb, size_t ov)
+merge_with_overlap(const char *a, size_t la,
+                   const char *b, size_t lb, size_t ov)
 {
     size_t out_len = la + lb - ov;
     char *out = malloc(out_len + 1);
@@ -154,10 +139,9 @@ merge_with_overlap(const char *a, size_t la, const char *b, size_t lb, size_t ov
     return out;
 }
 
-// A.3: Greedy pairwise merging
+/* --- A.3: Greedy pairwise merging --- */
 
-// Loop until one string remains (n - 1 iterations): scan all pairs to find the maximum-overlap pair
-// merge them into a single string (O(n^2 * L^2) per iteration).
+/* Loop until one string remains (n − 1 iterations): scan all pairs to find the maximum-overlap pair; merge them into a single string (O(n² · L²) per iteration). */
 static char *
 greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
 {
@@ -183,9 +167,9 @@ greedy_merge_pairs(Fragment *frags, size_t n, size_t *out_len)
     return frags[0].str;
 }
 
-// A.4: Overlap matrix & edge sort
+/* --- A.4: Overlap matrix & edge sort --- */
 
-// Build the overlap matrix (O(n^2 * L^2))
+/* Build the overlap matrix (O(n² · L²)) */
 static int **
 build_overlap_matrix(const FragmentArray *fa)
 {
@@ -222,13 +206,13 @@ compare_edge_desc(const void *a, const void *b)
     return eb->weight - ea->weight;
 }
 
-// A.5: Cycle-cover graph helpers
+/* --- A.5: Cycle-cover graph helpers --- */
 
-// Pick edges greedily under in/out-degree <= 1 (O(n^2 log n))
+/* Pick edges greedily under in/out-degree ≤ 1 (O(n² log n)) */
 static int **
 mgreedy_select_edges(int **overlap_matrix, size_t n)
 {
-    // Collect candidate edges (O(n^2))
+    /* Collect candidate edges (O(n²)) */
     Edge *edges = malloc(n * n * sizeof(Edge));
     int edge_count = 0;
     for (size_t i = 0; i < n; i++) {
@@ -241,13 +225,13 @@ mgreedy_select_edges(int **overlap_matrix, size_t n)
             }
         }
     }
-    // Sort by descending weight (O(n^2 log n))
+    /* Sort by descending weight (O(n² log n)) */
     qsort(edges, edge_count, sizeof(Edge), compare_edge_desc);
 
     int **selected = malloc(n * sizeof(int *));
     for (size_t i = 0; i < n; i++) selected[i] = calloc(n, sizeof(int));
 
-    // Accept edges keeping in/out-degree <= 1 (O(n^2)) 
+    /* Accept edges keeping in/out-degree ≤ 1 (O(n²)) */
     bool *out_used = calloc(n, sizeof(bool));
     bool *in_used  = calloc(n, sizeof(bool));
     for (int e = 0; e < edge_count; e++) {
@@ -264,11 +248,11 @@ mgreedy_select_edges(int **overlap_matrix, size_t n)
     return selected;
 }
 
-// Break cycles at weakest edge (O(n^2))
+/* Break cycles at weakest edge (O(n²)) */
 static void
 mgreedy_break_cycles(int **selected, size_t n)
 {
-    // Compute in-degrees (O(n^2))
+    /* Compute in-degrees (O(n²)) */
     int *in_count = calloc(n, sizeof(int));
     for (size_t i = 0; i < n; i++)
         for (size_t j = 0; j < n; j++)
@@ -276,7 +260,7 @@ mgreedy_break_cycles(int **selected, size_t n)
 
     bool *visited = calloc(n, sizeof(bool));
 
-    // Mark nodes reachable from path heads (O(n^2))
+    /* Mark nodes reachable from path heads (O(n²)) */
     for (size_t i = 0; i < n; i++) {
         if (in_count[i] != 0) continue;
         int cur = (int)i;
@@ -290,7 +274,7 @@ mgreedy_break_cycles(int **selected, size_t n)
         }
     }
 
-    // Walk each unvisited cycle, drop weakest edge (O(n^2))
+    /* Walk each unvisited cycle, drop weakest edge (O(n²)) */
     for (size_t i = 0; i < n; i++) {
         if (visited[i]) continue;
         int min_from = -1, min_to = -1, min_w = INT_MAX;
@@ -315,7 +299,7 @@ mgreedy_break_cycles(int **selected, size_t n)
     free(in_count);
 }
 
-// Concatenate path strings (O(n^2))
+/* Concatenate path strings (O(n²)) */
 static char **
 mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_t *out_count)
 {
@@ -367,28 +351,28 @@ mgreedy_build_sequences(const FragmentArray *fa, int **selected, size_t n, size_
     return sequences;
 }
 
-// A.6: Branch & Bound primitives (search state, min-heap, lower bound)
+/* --- A.6: Branch & Bound primitives (search state, min-heap, lower bound) --- */
 
 typedef struct {
-    int lb; // lower bound on final SCS length from this state
-    uint64_t mask; // bitmask of visited fragments
-    int last; // index of last visited fragment
-    int curlen; // total SCS length accumulated so far
-    int *path; // fragment-index sequence (owned by this state)
-    int path_len;
+    int      lb;       /* lower bound on final SCS length from this state */
+    uint64_t mask;     /* bitmask of visited fragments                    */
+    int      last;     /* index of last visited fragment                  */
+    int      curlen;   /* total SCS length accumulated so far             */
+    int     *path;     /* fragment-index sequence (owned by this state)   */
+    int      path_len;
 } BBState;
 
 typedef struct {
     BBState *data;
-    int size;
-    int cap;
+    int      size;
+    int      cap;
 } MinHeap;
 
 static void
 mh_push(MinHeap *h, BBState s)
 {
     if (h->size == h->cap) {
-        h->cap = h->cap ? h->cap * 2 : 64;
+        h->cap  = h->cap ? h->cap * 2 : 64;
         h->data = realloc(h->data, (size_t)h->cap * sizeof(BBState));
     }
     int i = h->size++;
@@ -405,7 +389,7 @@ static BBState
 mh_pop(MinHeap *h)
 {
     BBState ret = h->data[0];
-    h->data[0] = h->data[--h->size];
+    h->data[0]  = h->data[--h->size];
     for (int i = 0;;) {
         int l = 2*i+1, r = 2*i+2, m = i;
         if (l < h->size && h->data[l].lb < h->data[m].lb) m = l;
@@ -417,7 +401,7 @@ mh_pop(MinHeap *h)
     return ret;
 }
 
-// Compute a lower bound on the remaining characters needed (O(n^2))
+/* Compute a lower bound on the remaining characters needed (O(n²)) */
 static int
 remaining_lb(uint64_t mask, int n, int **ov, int *flen)
 {
@@ -433,27 +417,39 @@ remaining_lb(uint64_t mask, int n, int **ov, int *flen)
     return lb;
 }
 
-// Section B: Best-solution registry
+/* ============================================================================
+ * Section B: Best-solution registry
+ * ============================================================================ */
 
 typedef struct {
-    char *str;
+    char  *str;
     size_t len;
 } BestSolution;
 
 static BestSolution g_best = { NULL, 0 };
 
-// Log algo metrics; if candidate beats g_best, publish it to stdout, else free it (NULL = no improvement)
+/* Log algo metrics; if candidate beats g_best, publish it to stdout, else free it (NULL = no improvement) */
 static int
-try_record_solution(char *candidate, size_t cand_len, const char *algo_label, double elapsed_sec)
+try_record_solution(char *candidate,
+                    size_t cand_len,
+                    const char *algo_label,
+                    double elapsed_sec)
 {
     if (candidate == NULL) {
-        fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs (no improvement over g_best)\n",
-            algo_label, g_best.len, elapsed_sec);
+        fprintf(stderr,
+                "[algo=%s] len=%zu elapsed=%.3fs (no improvement over g_best)\n",
+                algo_label,
+                g_best.len,
+                elapsed_sec);
         return 0;
     }
 
-    fprintf(stderr, "[algo=%s] len=%zu elapsed=%.3fs result=%s\n",
-        algo_label, cand_len, elapsed_sec, candidate);
+    fprintf(stderr,
+            "[algo=%s] len=%zu elapsed=%.3fs result=%s\n",
+            algo_label,
+            cand_len,
+            elapsed_sec,
+            candidate);
 
     bool improved = (g_best.str == NULL) || (cand_len < g_best.len);
 
@@ -472,10 +468,11 @@ try_record_solution(char *candidate, size_t cand_len, const char *algo_label, do
 
     return 1;
 }
+/* ============================================================================
+ * Section C: Step 1 — preprocess
+ * ============================================================================ */
 
-// Section C: Step 1 - preprocess
-
-// Load fragments from a file (or stdin if "-") into a FragmentArray
+/* Load fragments from a file (or stdin if "-") into a FragmentArray */
 static FragmentArray
 read_all_fragments_array(const char *file_name)
 {
@@ -503,8 +500,7 @@ read_all_fragments_array(const char *file_name)
     return fa;
 }
 
-// Remove any fragment that is a substring of another fragment.
-// Complexity: worst O(n^2 * L^2), average O(n^2 * L)
+/* Remove any fragment that is a substring of another fragment. */
 static void
 remove_substring_fragments_array(FragmentArray *fa)
 {
@@ -537,10 +533,11 @@ run_step1(const char *file_name)
     return fa;
 }
 
-// Section D: Step 2 - correct / sub-optimal / quick algorithms
+/* ============================================================================
+ * Section D: Step 2 — correct / sub-optimal / quick algorithms
+ * ============================================================================ */
 
-// GREEDY: iteratively merge the max-overlap pair until one string remains
-// Complexity: worst O(n^3 * L^2), average O(n^3 * L)
+/* GREEDY: iteratively merge the max-overlap pair until one string remains (Complexity: worst O(n³ · L²), average O(n³ · L)). */
 static int
 run_greedy(const FragmentArray *fa)
 {
@@ -561,15 +558,14 @@ run_greedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "GREEDY", mono_seconds() - t0);
 }
 
-// MGREEDY: model fragments as nodes of a weighted directed graph (edge weight = overlap), build a max-weight path cover via degree-one greedy edge selection, break cycles at weakest edge, concatenate paths
-// Complexity: worst O(n^2 * (L^2 + log n)), average O(n^2 * (L + log n))
+/* MGREEDY: model fragments as nodes of a weighted directed graph (edge weight = overlap), build a max-weight path cover via degree-one greedy edge selection, break cycles at weakest edge, concatenate paths (Complexity: worst O(n² · (L² + log n)), average O(n² · (L + log n))). */
 static int
 run_mgreedy(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
     size_t n = fa->count;
 
-    int **overlap = build_overlap_matrix(fa);
+    int **overlap  = build_overlap_matrix(fa);
     int **selected = mgreedy_select_edges(overlap, n);
     mgreedy_break_cycles(selected, n);
 
@@ -595,15 +591,14 @@ run_mgreedy(const FragmentArray *fa)
     return try_record_solution(result, result_len, "MGREEDY", mono_seconds() - t0);
 }
 
-// TGREEDY: Run MGREEDY first to compress the n fragments into a small set of path strings, then run GREEDY on those paths to produce one supersequence
-// Complexity: worst O(n^2 * (L^2 + log n) + p^3 * L'^2), average O(n^2 * (L + log n) + p^3 · L')
+/* TGREEDY: Run MGREEDY first to compress the n fragments into a small set of path strings, then run GREEDY on those paths to produce one supersequence (Complexity: worst O(n² · (L² + log n) + p³ · L′²), average O(n² · (L + log n) + p³ · L′)). */
 static int
 run_tgreedy(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
     size_t n = fa->count;
 
-    int **overlap = build_overlap_matrix(fa);
+    int **overlap  = build_overlap_matrix(fa);
     int **selected = mgreedy_select_edges(overlap, n);
     mgreedy_break_cycles(selected, n);
 
@@ -629,44 +624,32 @@ run_tgreedy(const FragmentArray *fa)
 static void
 run_step2(const FragmentArray *fa, uint8_t mask)
 {
-    if (mask & ALGO_GREEDY) run_greedy(fa);
+    if (mask & ALGO_GREEDY)  run_greedy(fa);
     if (mask & ALGO_MGREEDY) run_mgreedy(fa);
     if (mask & ALGO_TGREEDY) run_tgreedy(fa);
 }
 
-// Section E: Step 3 - correct / optimal / slow algorithms
+/* ============================================================================
+ * Section E: Step 3 — correct / optimal / slow algorithms
+ * ============================================================================ */
 
 #define HK_THRESHOLD 20
 
-/*
- * HELD_KARP: Build a 2D table indexed by (subset of fragments, last fragment), 
- * where each cell holds the shortest supersequence length for ordering that subset ending at that fragment. 
- * Fill the table from smaller subsets to larger; the answer is the minimum entry in the final row (subset = all fragments).
- * Restricted to n <= 20 currently but can be changed depending on the computer's RAM
- * 
- * if n < 18:     O(2^n * n^2) time, O(2^n * n) space
- * 
- * 2^18 = 262,144; table entries = 4,718,592; each entry = 4 bytes; 4718592*4 = ~18MB RAM
- * 2^22 = 4,194,304; table entries = 92,274,688; ~360MB
- * 2^25 = 33,554,432; table entries = 838,860,800; ~3.2GB
- * 
- * Complexity: worst O(2^n * n^2), average O(2^n * n^2) */
-
-
+/* HELD_KARP: Build a 2D table indexed by (subset of fragments, last fragment), where each cell holds the shortest supersequence length for ordering that subset ending at that fragment. Fill the table from smaller subsets to larger; the answer is the minimum entry in the final row (subset = all fragments). Restricted to n ≤ 20 (Complexity: worst O(2ⁿ · n²), average O(2ⁿ · n²)). */
 static int
 run_held_karp(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    size_t n = fa->count;
+    size_t n  = fa->count;
 
-    int **ov = build_overlap_matrix(fa);
-    int *flen = malloc(n * sizeof(int));
+    int **ov   = build_overlap_matrix(fa);
+    int  *flen = malloc(n * sizeof(int));
     for (size_t i = 0; i < n; i++) flen[i] = (int)fa->items[i].len;
 
-    int full = (1 << n) - 1;
+    int    full   = (1 << n) - 1;
     size_t states = (size_t)1 << n;
 
-    int *dp = malloc(states * n * sizeof(int));
+    int *dp  = malloc(states * n * sizeof(int));
     int *par = malloc(states * n * sizeof(int));
     for (size_t i = 0; i < states * n; i++) { dp[i] = INT_MAX / 2; par[i] = -1; }
 
@@ -675,7 +658,7 @@ run_held_karp(const FragmentArray *fa)
 
     size_t upper_bound = (g_best.str == NULL) ? SIZE_MAX : g_best.len;
 
-    // For each filled cell (S, v) in increasing-S order, extend by every u element in S, updating table[S U {u}, u] if shorter (O(2^n * n^2))
+    /* For each filled cell (S, v) in increasing-S order, extend by every u ∉ S, updating table[S∪{u}, u] if shorter (O(2ⁿ · n²)) */
     for (int S = 1; S <= full; S++) {
         for (int v = 0; v < (int)n; v++) {
             if (!(S & (1 << v))) continue;
@@ -683,18 +666,18 @@ run_held_karp(const FragmentArray *fa)
             if (dpSv >= INT_MAX / 2) continue;
             for (int u = 0; u < (int)n; u++) {
                 if (S & (1 << u)) continue;
-                int S2 = S | (1 << u);
+                int S2       = S | (1 << u);
                 int new_cost = dpSv + flen[u] - ov[v][u];
                 if ((size_t)new_cost >= upper_bound) continue;
                 if (new_cost < dp[S2 * n + u]) {
-                    dp[S2 * n + u] = new_cost;
+                    dp[S2 * n + u]  = new_cost;
                     par[S2 * n + u] = v;
                 }
             }
         }
     }
 
-    // In the final row (S = all fragments), pick the column with the minimum length (O(n))
+    /* In the final row (S = all fragments), pick the column with the minimum length (O(n)) */
     int best_total = INT_MAX / 2, best_last = -1;
     for (int v = 0; v < (int)n; v++) {
         if (dp[full * n + v] < best_total) {
@@ -707,7 +690,7 @@ run_held_karp(const FragmentArray *fa)
         free_overlap_matrix(ov, n);
         return try_record_solution(NULL, 0, "HELD_KARP", mono_seconds() - t0);
     }
-    // Walk parents backward from that column to recover the ordering (O(n))
+    /* Walk parents backward from that column to recover the ordering (O(n)) */
     int *path = malloc(n * sizeof(int));
     {
         int S = full, curr = best_last;
@@ -718,12 +701,12 @@ run_held_karp(const FragmentArray *fa)
             curr = prev;
         }
     }
-    // Emit the string by concatenating fragments along the ordering with their overlaps (O(n * L))
-    char *result = malloc((size_t)best_total + 1);
-    size_t pos = fa->items[path[0]].len;
+    /* Emit the string by concatenating fragments along the ordering with their overlaps (O(n · L)) */
+    char  *result = malloc((size_t)best_total + 1);
+    size_t pos    = fa->items[path[0]].len;
     memcpy(result, fa->items[path[0]].str, pos);
     for (int i = 1; i < (int)n; i++) {
-        int u = path[i-1], v2 = path[i];
+        int    u    = path[i-1], v2 = path[i];
         size_t skip = (size_t)ov[u][v2];
         memcpy(result + pos, fa->items[v2].str + skip, fa->items[v2].len - skip);
         pos += fa->items[v2].len - skip;
@@ -731,58 +714,49 @@ run_held_karp(const FragmentArray *fa)
     result[pos] = '\0';
 
     free(path);
-    free(dp);
-    free(par);
-    free(flen);
+    free(dp); free(par); free(flen);
     free_overlap_matrix(ov, n);
 
     return try_record_solution(result, (size_t)best_total, "HELD_KARP", mono_seconds() - t0);
 }
 
-// BRANCH_AND_BOUND: Build every possible ordering of the fragments. Discard any branch whose lower bound cannot beat the current best length.
-// The first ordering that uses every fragment is the optimal answer. Restricted to n <= 63
-// Complexity: worst O(n! * n^3), average O(n! * n^3)
-
+/* BRANCH_AND_BOUND: Build every possible ordering of the fragments. Discard any branch whose lower bound cannot beat the current best length. The first ordering that uses every fragment is the optimal answer. Restricted to n ≤ 63 (Complexity: worst O(n! · n³), average O(n! · n³)). */
 static int
 run_branch_and_bound(const FragmentArray *fa)
 {
     double t0 = mono_seconds();
-    size_t n = fa->count;
-    int MAX = 63;
+    size_t n  = fa->count;
 
-    if (n > MAX) return 0;
+    if (n > 63) return 0;
 
-    int **ov = build_overlap_matrix(fa);
-    int *flen = malloc(n * sizeof(int));
+    int **ov   = build_overlap_matrix(fa);
+    int  *flen = malloc(n * sizeof(int));
     for (size_t i = 0; i < n; i++) flen[i] = (int)fa->items[i].len;
 
-    size_t upper_bound = (g_best.str == NULL) ? SIZE_MAX : g_best.len;
-    uint64_t full_mask = ((uint64_t)1 << n) - 1;
-    MinHeap pq = { NULL, 0, 0 };
-    int improved = 0;
+    size_t   upper_bound = (g_best.str == NULL) ? SIZE_MAX : g_best.len;
+    uint64_t full_mask   = ((uint64_t)1 << n) - 1;
+    MinHeap  pq          = { NULL, 0, 0 };
+    int      improved    = 0;
 
-    // For each fragment, push an initial state into the min-heap
-    // state = lower bound, visited fragments, last fragment, current length) (O(n^3)
+    /* For each fragment, push an initial state into the min-heap (state = lower bound, visited fragments, last fragment, current length) (O(n³)) */
     for (int start = 0; start < (int)n; start++) {
-        uint64_t mask = (uint64_t)1 << start;
-        int curlen = flen[start];
-        int lb = curlen + remaining_lb(mask, (int)n, ov, flen);
+        uint64_t mask   = (uint64_t)1 << start;
+        int      curlen = flen[start];
+        int      lb     = curlen + remaining_lb(mask, (int)n, ov, flen);
         if ((size_t)lb >= upper_bound) continue;
 
         BBState s;
-        s.lb = lb;
-        s.mask = mask;
-        s.last = start;
-        s.curlen = curlen;
+        s.lb       = lb;
+        s.mask     = mask;
+        s.last     = start;
+        s.curlen   = curlen;
         s.path_len = 1;
-        s.path = malloc(sizeof(int));
-        s.path[0] = start;
+        s.path     = malloc(sizeof(int));
+        s.path[0]  = start;
         mh_push(&pq, s);
     }
 
-    // Loop until every possible ordering is explored (n! iterations): pop the lowest-bound state
-    // if complete, return it as the answer;
-    // else extend by every unvisited fragment, pushing children that beat the current best (O(n^3) per iteration)
+    /* Loop until every possible ordering is explored (n! iterations): pop the lowest-bound state; if complete, return it as the answer; else extend by every unvisited fragment, pushing children that beat the current best (O(n³) per iteration) */
     while (pq.size > 0) {
         BBState cur = mh_pop(&pq);
 
@@ -791,19 +765,19 @@ run_branch_and_bound(const FragmentArray *fa)
         if (cur.mask == full_mask) {
             size_t rlen = (size_t)cur.curlen;
             if (rlen < upper_bound) {
-                int *path = cur.path;
-                char *result = malloc(rlen + 1);
-                size_t pos = fa->items[path[0]].len;
+                int   *path   = cur.path;
+                char  *result = malloc(rlen + 1);
+                size_t pos    = fa->items[path[0]].len;
                 memcpy(result, fa->items[path[0]].str, pos);
                 for (int i = 1; i < cur.path_len; i++) {
-                    int u = path[i-1], v2 = path[i];
+                    int    u    = path[i-1], v2 = path[i];
                     size_t skip = (size_t)ov[u][v2];
                     memcpy(result + pos, fa->items[v2].str + skip, fa->items[v2].len - skip);
                     pos += fa->items[v2].len - skip;
                 }
                 result[pos] = '\0';
-                upper_bound = rlen;
-                improved |= try_record_solution(result, rlen, "BRANCH_AND_BOUND", mono_seconds() - t0);
+                upper_bound  = rlen;
+                improved    |= try_record_solution(result, rlen, "BRANCH_AND_BOUND", mono_seconds() - t0);
             }
             free(cur.path);
             continue;
@@ -812,19 +786,19 @@ run_branch_and_bound(const FragmentArray *fa)
         for (int next = 0; next < (int)n; next++) {
             if (cur.mask & ((uint64_t)1 << next)) continue;
 
-            uint64_t new_mask = cur.mask | ((uint64_t)1 << next);
-            int new_curlen = cur.curlen + flen[next] - ov[cur.last][next];
-            int new_lb = new_curlen + remaining_lb(new_mask, (int)n, ov, flen);
+            uint64_t new_mask   = cur.mask | ((uint64_t)1 << next);
+            int      new_curlen = cur.curlen + flen[next] - ov[cur.last][next];
+            int      new_lb     = new_curlen + remaining_lb(new_mask, (int)n, ov, flen);
 
             if ((size_t)new_lb >= upper_bound) continue;
 
             BBState s;
-            s.lb = new_lb;
-            s.mask = new_mask;
-            s.last = next;
-            s.curlen = new_curlen;
+            s.lb       = new_lb;
+            s.mask     = new_mask;
+            s.last     = next;
+            s.curlen   = new_curlen;
             s.path_len = cur.path_len + 1;
-            s.path = malloc((size_t)s.path_len * sizeof(int));
+            s.path     = malloc((size_t)s.path_len * sizeof(int));
             memcpy(s.path, cur.path, (size_t)cur.path_len * sizeof(int));
             s.path[cur.path_len] = next;
             mh_push(&pq, s);
@@ -849,16 +823,18 @@ run_step3(const FragmentArray *fa, uint8_t mask)
     bool want_hk = (mask & ALGO_HK) && fa->count <= HK_THRESHOLD;
     bool want_bb = (mask & ALGO_BB) && fa->count <= 63;
 
-    if (want_hk) run_held_karp(fa);
+    if      (want_hk) run_held_karp(fa);
     else if (want_bb) run_branch_and_bound(fa);
 }
 
-// Section F: main()
+/* ============================================================================
+ * Section F: main()
+ * ============================================================================ */
 
 int
 main(int argc, char *argv[])
 {
-    uint8_t mask = ALGO_ALL;
+    uint8_t     mask       = ALGO_ALL;
     const char *input_path = NULL;
 
     for (int i = 1; i < argc; i++) {
@@ -869,8 +845,10 @@ main(int argc, char *argv[])
             }
             int parsed = parse_algos(argv[++i]);
             if (parsed < 0) {
-                fprintf(stderr, "Error: invalid --algos value '%s'. " "Valid tokens: greedy,mgreedy,tgreedy,hk,bb\n",
-                    argv[i]);
+                fprintf(stderr,
+                        "Error: invalid --algos value '%s'. "
+                        "Valid tokens: greedy,mgreedy,tgreedy,hk,bb\n",
+                        argv[i]);
                 exit(1);
             }
             mask = (uint8_t)parsed;
@@ -883,12 +861,13 @@ main(int argc, char *argv[])
     }
 
     if (input_path == NULL) {
-        fprintf(stderr, "Usage: %s [--algos LIST] [ <input_file> | - ]\n"
-            "  --algos LIST: subset of {greedy,mgreedy,tgreedy,hk,bb} (default: all).\n"
-            "  Input: one fragment per line (no blank lines).\n"
-            "  stdout: reconstructed text (non-increasing length).\n"
-            "  stderr: per-algorithm and quality/test metrics.\n",
-            argv[0]);
+        fprintf(stderr,
+                "Usage: %s [--algos LIST] [ <input_file> | - ]\n"
+                "  --algos LIST: subset of {greedy,mgreedy,tgreedy,hk,bb} (default: all).\n"
+                "  Input: one fragment per line (no blank lines).\n"
+                "  stdout: reconstructed text (non-increasing length).\n"
+                "  stderr: per-algorithm and quality/test metrics.\n",
+                argv[0]);
         exit(1);
     }
 
